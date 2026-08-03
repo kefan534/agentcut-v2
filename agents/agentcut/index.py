@@ -21,6 +21,11 @@ Environment variables expected in Makers project settings:
     AI_GATEWAY_MODEL        e.g. @makers/deepseek-v4-flash
     AGENT_BACKEND_URL       Public URL of the AgentCut backend
     AGENT_TOOL_SECRET       Shared secret for backend bridge calls
+
+IMPORTANT: All tool parameter types use `object` / `list` / `str` / `float` /
+`int` / `bool` — never `Dict[str, Any]` or `List[Dict[...]]` with generics,
+because the Makers Pydantic runtime rejects `additionalProperties` on object
+schemas generated from generic type hints.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ import contextvars
 import json
 import os
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -48,7 +53,7 @@ AGENT_PROMPT = (
     "canvas_generate_video、canvas_generate_audio、canvas_create_generation_flow、canvas_create_config_node、canvas_run_generation、"
     "canvas_update_node、canvas_connect_nodes 等通用工具；复杂批量改动再用 canvas_apply_ops，删除连线可用 delete_connections。"
     "本轮若有用户上传的图片附件，会同时给出 attachmentId；用户要求把附件放入画布或作为生成参考图时，必须先用 canvas_create_attachment_nodes "
-    "创建真实图片节点，再把返回的节点 ID 传给 canvas_create_generation_flow.referenceNodeIds，不要创建空图片占位节点。"
+    "创建真实图片节点，再把返回的节点 ID 传给 canvas_create_generation_flow.reference_node_ids，不要创建空图片占位节点。"
     "若当前不在画布页，画布工具会报错，需先用 site_navigate 打开画布。"
     "想了解或打开用户已有画布，用 canvas_list_projects 获取画布清单和 id，再用 site_navigate 跳 /canvas/:id 打开。"
     "生图工作台可用 workbench_image_get_config 看可选项、workbench_image_generate 填提示词并生成；"
@@ -129,7 +134,9 @@ async def _bridge_tool(name: str, tool_input: Any) -> str:
 
 
 # -----------------------------------------------------------------------------
-# Tool definitions (mirror the canvas-agent tool schema)
+# Tool definitions
+# NOTE: All params that would normally be Dict/List with generics use plain
+# `object` or `list` to avoid Pydantic `additionalProperties` errors on Makers.
 # -----------------------------------------------------------------------------
 
 @function_tool
@@ -163,7 +170,7 @@ def canvas_export_snapshot() -> str:
 
 
 @function_tool
-def canvas_apply_ops(ops: List[Dict[str, Any]]) -> str:
+def canvas_apply_ops(ops: list) -> str:
     """Apply a batch of canvas operations (add_node, update_node, delete_node, connect_nodes, etc.)."""
     return asyncio.run(_bridge_tool("canvas_apply_ops", {"ops": ops}))
 
@@ -176,17 +183,17 @@ def canvas_create_node(
     y: float = 0,
     width: float = 0,
     height: float = 0,
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: object = None,
 ) -> str:
     """Create a single node on the canvas."""
     return asyncio.run(_bridge_tool("canvas_create_node", {
         "nodeType": node_type, "title": title, "x": x, "y": y,
-        "width": width, "height": height, "metadata": metadata or {},
+        "width": width, "height": height, "metadata": metadata if metadata is not None else {},
     }))
 
 
 @function_tool
-def canvas_create_attachment_nodes(attachment_ids: List[str], x: float = 0, y: float = 0, gap: float = 40, direction: str = "row") -> str:
+def canvas_create_attachment_nodes(attachment_ids: list, x: float = 0, y: float = 0, gap: float = 40, direction: str = "row") -> str:
     """Turn uploaded image attachments into real image nodes on the canvas."""
     return asyncio.run(_bridge_tool("canvas_create_attachment_nodes", {
         "attachmentIds": attachment_ids, "x": x, "y": y, "gap": gap, "direction": direction,
@@ -202,7 +209,7 @@ def canvas_create_text_node(text: str = "", title: str = "", x: float = 0, y: fl
 
 
 @function_tool
-def canvas_create_text_nodes(items: List[Dict[str, Any]], x: float = 0, y: float = 0, gap: float = 40, direction: str = "row") -> str:
+def canvas_create_text_nodes(items: list, x: float = 0, y: float = 0, gap: float = 40, direction: str = "row") -> str:
     """Create multiple text nodes on the canvas."""
     return asyncio.run(_bridge_tool("canvas_create_text_nodes", {
         "items": items, "x": x, "y": y, "gap": gap, "direction": direction,
@@ -269,7 +276,7 @@ def canvas_create_generation_flow(
     title: str = "",
     x: float = 0,
     y: float = 0,
-    reference_node_ids: Optional[List[str]] = None,
+    reference_node_ids: list = None,
     auto_run: bool = False,
     model_name: str = "",
     quality: str = "",
@@ -284,7 +291,7 @@ def canvas_create_generation_flow(
     """Create a generic generation flow (prompt node + config node + optional reference nodes)."""
     payload: Dict[str, Any] = {
         "prompt": prompt, "mode": mode, "title": title, "x": x, "y": y,
-        "referenceNodeIds": reference_node_ids or [], "autoRun": auto_run,
+        "referenceNodeIds": reference_node_ids if reference_node_ids is not None else [], "autoRun": auto_run,
     }
     for key in ("model_name", "quality", "size", "count", "seconds", "resolution", "aspect_ratio", "watermark", "generate_audio"):
         val = locals().get(key)
@@ -341,9 +348,13 @@ def canvas_generate_audio(prompt: str, title: str = "", x: float = 0, y: float =
 
 
 @function_tool
-def canvas_update_node(id: str, patch: Optional[Dict[str, Any]] = None, metadata: Optional[Dict[str, Any]] = None) -> str:
+def canvas_update_node(id: str, patch: object = None, metadata: object = None) -> str:
     """Update a canvas node."""
-    return asyncio.run(_bridge_tool("canvas_update_node", {"id": id, "patch": patch or {}, "metadata": metadata or {}}))
+    return asyncio.run(_bridge_tool("canvas_update_node", {
+        "id": id,
+        "patch": patch if patch is not None else {},
+        "metadata": metadata if metadata is not None else {},
+    }))
 
 
 @function_tool
@@ -353,7 +364,7 @@ def canvas_update_node_text(id: str, text: str, title: str = "") -> str:
 
 
 @function_tool
-def canvas_move_nodes(items: List[Dict[str, Any]]) -> str:
+def canvas_move_nodes(items: list) -> str:
     """Move one or more canvas nodes."""
     return asyncio.run(_bridge_tool("canvas_move_nodes", {"items": items}))
 
@@ -365,26 +376,26 @@ def canvas_resize_node(id: str, width: float, height: float, free_resize: bool =
 
 
 @function_tool
-def canvas_delete_nodes(ids: List[str]) -> str:
+def canvas_delete_nodes(ids: list) -> str:
     """Delete canvas nodes."""
     return asyncio.run(_bridge_tool("canvas_delete_nodes", {"ids": ids}))
 
 
 @function_tool
-def canvas_connect_nodes(connections: List[Dict[str, str]]) -> str:
+def canvas_connect_nodes(connections: list) -> str:
     """Connect nodes on the canvas."""
     return asyncio.run(_bridge_tool("canvas_connect_nodes", {"connections": connections}))
 
 
 @function_tool
-def canvas_select_nodes(ids: List[str]) -> str:
+def canvas_select_nodes(ids: list) -> str:
     """Set the current selection on the canvas."""
     return asyncio.run(_bridge_tool("canvas_select_nodes", {"ids": ids}))
 
 
 @function_tool
-def canvas_set_viewport(viewport: Dict[str, float]) -> str:
-    """Adjust the canvas viewport."""
+def canvas_set_viewport(viewport: object) -> str:
+    """Adjust the canvas viewport (object with x, y, zoom keys)."""
     return asyncio.run(_bridge_tool("canvas_set_viewport", {"viewport": viewport}))
 
 
@@ -395,10 +406,10 @@ def canvas_run_generation(node_id: str, mode: str = "image", prompt: str = "") -
 
 
 @function_tool
-def generation_get_status(scope: str = "all", task_id: str = "", node_ids: Optional[List[str]] = None, limit: int = 20) -> str:
+def generation_get_status(scope: str = "all", task_id: str = "", node_ids: list = None, limit: int = 20) -> str:
     """Query generation task status."""
     return asyncio.run(_bridge_tool("generation_get_status", {
-        "scope": scope, "taskId": task_id, "nodeIds": node_ids or [], "limit": limit,
+        "scope": scope, "taskId": task_id, "nodeIds": node_ids if node_ids is not None else [], "limit": limit,
     }))
 
 
@@ -448,10 +459,10 @@ def workbench_video_generate(
 
 
 @function_tool
-def prompts_search(keyword: str = "", category: str = "", tags: Optional[List[str]] = None, page: int = 1, page_size: int = 20) -> str:
+def prompts_search(keyword: str = "", category: str = "", tags: list = None, page: int = 1, page_size: int = 20) -> str:
     """Search the prompt library."""
     return asyncio.run(_bridge_tool("prompts_search", {
-        "keyword": keyword, "category": category, "tags": tags or [], "page": page, "pageSize": page_size,
+        "keyword": keyword, "category": category, "tags": tags if tags is not None else [], "page": page, "pageSize": page_size,
     }))
 
 
@@ -464,11 +475,11 @@ def assets_list(kind: str = "all", keyword: str = "", page: int = 1, page_size: 
 
 
 @function_tool
-def assets_add(kind: str, title: str, content: str = "", image_url: str = "", tags: Optional[List[str]] = None, source: str = "", note: str = "") -> str:
+def assets_add(kind: str, title: str, content: str = "", image_url: str = "", tags: list = None, source: str = "", note: str = "") -> str:
     """Add a text or image asset to the user's library."""
     return asyncio.run(_bridge_tool("assets_add", {
         "kind": kind, "title": title, "content": content, "imageUrl": image_url,
-        "tags": tags or [], "source": source, "note": note,
+        "tags": tags if tags is not None else [], "source": source, "note": note,
     }))
 
 

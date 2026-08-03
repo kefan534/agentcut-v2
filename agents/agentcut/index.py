@@ -219,22 +219,46 @@ def canvas_create_config_node(
     width: float = 0,
     height: float = 0,
     auto_run: bool = False,
-    **kwargs: Any,
+    model_name: str = "",
+    quality: str = "",
+    size: str = "",
+    count: int = 1,
+    seconds: str = "",
+    resolution: str = "",
+    aspect_ratio: str = "",
+    watermark: bool = False,
+    generate_audio: bool = False,
 ) -> str:
     """Create a generation config node on the canvas."""
-    payload = {
+    payload: Dict[str, Any] = {
         "prompt": prompt, "mode": mode, "title": title, "x": x, "y": y,
         "width": width, "height": height, "autoRun": auto_run,
     }
-    payload.update(kwargs)
+    for key in ("model_name", "quality", "size", "count", "seconds", "resolution", "aspect_ratio", "watermark", "generate_audio"):
+        val = locals().get(key)
+        if val not in (None, "", 0, False):
+            payload[key] = val
     return asyncio.run(_bridge_tool("canvas_create_config_node", payload))
 
 
 @function_tool
-def canvas_create_image_prompt_flow(prompt: str, title: str = "", x: float = 0, y: float = 0, auto_run: bool = False, **kwargs: Any) -> str:
+def canvas_create_image_prompt_flow(
+    prompt: str,
+    title: str = "",
+    x: float = 0,
+    y: float = 0,
+    auto_run: bool = False,
+    model_name: str = "",
+    quality: str = "",
+    size: str = "",
+    count: int = 1,
+) -> str:
     """Create a text prompt node + image generation config node, wired together."""
-    payload = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": auto_run}
-    payload.update(kwargs)
+    payload: Dict[str, Any] = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": auto_run}
+    for key in ("model_name", "quality", "size", "count"):
+        val = locals().get(key)
+        if val not in (None, "", 0, False):
+            payload[key] = val
     return asyncio.run(_bridge_tool("canvas_create_image_prompt_flow", payload))
 
 
@@ -247,46 +271,72 @@ def canvas_create_generation_flow(
     y: float = 0,
     reference_node_ids: Optional[List[str]] = None,
     auto_run: bool = False,
-    **kwargs: Any,
+    model_name: str = "",
+    quality: str = "",
+    size: str = "",
+    count: int = 1,
+    seconds: str = "",
+    resolution: str = "",
+    aspect_ratio: str = "",
+    watermark: bool = False,
+    generate_audio: bool = False,
 ) -> str:
     """Create a generic generation flow (prompt node + config node + optional reference nodes)."""
-    payload = {
+    payload: Dict[str, Any] = {
         "prompt": prompt, "mode": mode, "title": title, "x": x, "y": y,
         "referenceNodeIds": reference_node_ids or [], "autoRun": auto_run,
     }
-    payload.update(kwargs)
+    for key in ("model_name", "quality", "size", "count", "seconds", "resolution", "aspect_ratio", "watermark", "generate_audio"):
+        val = locals().get(key)
+        if val not in (None, "", 0, False):
+            payload[key] = val
     return asyncio.run(_bridge_tool("canvas_create_generation_flow", payload))
 
 
 @function_tool
-def canvas_generate_text(prompt: str, title: str = "", x: float = 0, y: float = 0, **kwargs: Any) -> str:
+def canvas_generate_text(prompt: str, title: str = "", x: float = 0, y: float = 0, model_name: str = "") -> str:
     """Create a text generation flow and run it immediately."""
-    payload = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
-    payload.update(kwargs)
+    payload: Dict[str, Any] = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
+    if model_name:
+        payload["model_name"] = model_name
     return asyncio.run(_bridge_tool("canvas_generate_text", payload))
 
 
 @function_tool
-def canvas_generate_image(prompt: str, title: str = "", x: float = 0, y: float = 0, **kwargs: Any) -> str:
+def canvas_generate_image(
+    prompt: str, title: str = "", x: float = 0, y: float = 0,
+    model_name: str = "", quality: str = "", size: str = "", count: int = 1,
+) -> str:
     """Create an image generation flow and run it immediately."""
-    payload = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
-    payload.update(kwargs)
+    payload: Dict[str, Any] = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
+    for key in ("model_name", "quality", "size", "count"):
+        val = locals().get(key)
+        if val not in (None, "", 0, False):
+            payload[key] = val
     return asyncio.run(_bridge_tool("canvas_generate_image", payload))
 
 
 @function_tool
-def canvas_generate_video(prompt: str, title: str = "", x: float = 0, y: float = 0, **kwargs: Any) -> str:
+def canvas_generate_video(
+    prompt: str, title: str = "", x: float = 0, y: float = 0,
+    model_name: str = "", size: str = "", seconds: str = "", resolution: str = "",
+    generate_audio: bool = False, watermark: bool = False,
+) -> str:
     """Create a video generation flow and run it immediately."""
-    payload = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
-    payload.update(kwargs)
+    payload: Dict[str, Any] = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
+    for key in ("model_name", "size", "seconds", "resolution", "generate_audio", "watermark"):
+        val = locals().get(key)
+        if val not in (None, "", False):
+            payload[key] = val
     return asyncio.run(_bridge_tool("canvas_generate_video", payload))
 
 
 @function_tool
-def canvas_generate_audio(prompt: str, title: str = "", x: float = 0, y: float = 0, **kwargs: Any) -> str:
+def canvas_generate_audio(prompt: str, title: str = "", x: float = 0, y: float = 0, model_name: str = "") -> str:
     """Create an audio generation flow and run it immediately."""
-    payload = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
-    payload.update(kwargs)
+    payload: Dict[str, Any] = {"prompt": prompt, "title": title, "x": x, "y": y, "autoRun": True}
+    if model_name:
+        payload["model_name"] = model_name
     return asyncio.run(_bridge_tool("canvas_generate_audio", payload))
 
 

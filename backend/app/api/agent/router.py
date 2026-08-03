@@ -10,6 +10,7 @@ Makers-hosted AgentCut agent.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from typing import Any, Dict, Optional
@@ -19,6 +20,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+
+from urllib.parse import urlparse, urlunparse
 
 from app.core.config import settings
 from app.core.deps import get_current_user
@@ -34,6 +37,16 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 AGENT_TOOL_SECRET = (settings.AGENT_TOOL_SECRET or "").strip()
 EDGEONE_MAKERS_AGENT_URL = (settings.EDGEONE_MAKERS_AGENT_URL or "").rstrip("/")
 EDGEONE_MAKERS_API_KEY = (settings.EDGEONE_MAKERS_API_KEY or "").strip()
+
+
+def _makers_url(path: str = "") -> str:
+    """Append a sub-path to the Makers agent URL, keeping query params intact."""
+    base = EDGEONE_MAKERS_AGENT_URL
+    if not base:
+        return ""
+    parsed = urlparse(base)
+    new_path = parsed.path.rstrip("/") + path if path else parsed.path
+    return urlunparse(parsed._replace(path=new_path))
 
 # -----------------------------------------------------------------------------
 # In-memory per-user event bus and tool result rendezvous
@@ -91,7 +104,10 @@ def _enqueue(user_id: str, event_name: str, payload: Dict[str, Any]) -> None:
 
 
 def _build_conversation_id(user_id: str, thread_id: Optional[str]) -> str:
-    return f"user-{user_id}:thread-{thread_id or uuid.uuid4()}"
+    raw = f"user-{user_id}-{thread_id or uuid.uuid4()}"
+    # Makers requires 6-36 chars, only [0-9a-zA-Z-_.]
+    import hashlib
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 # -----------------------------------------------------------------------------
@@ -182,13 +198,13 @@ async def _stream_from_makers(user_id: str, conversation_id: str, body: Dict[str
     if EDGEONE_MAKERS_API_KEY:
         headers["Authorization"] = f"Bearer {EDGEONE_MAKERS_API_KEY}"
 
-    url = f"{EDGEONE_MAKERS_AGENT_URL}"
+    url = _makers_url()
     stream_id = f"{conversation_id}:msg"
 
     _enqueue(user_id, "codex_state", {"busy": True, "threadId": conversation_id, "turnId": ""})
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
             async with client.stream("POST", url, json=body, headers=headers) as response:
                 response.raise_for_status()
                 buffer = ""
@@ -367,7 +383,7 @@ async def agent_interrupt(
     body = await request.json()
     conversation_id = body.get("threadId") if isinstance(body, dict) else None
 
-    stop_url = f"{EDGEONE_MAKERS_AGENT_URL}/stop"
+    stop_url = _makers_url("/stop")
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if EDGEONE_MAKERS_API_KEY:
         headers["Authorization"] = f"Bearer {EDGEONE_MAKERS_API_KEY}"

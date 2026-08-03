@@ -7,10 +7,18 @@ from app.api.auth.router import router as auth_router
 from app.api.gateway.router import router as gateway_router
 from app.api.upload.router import router as upload_router
 from app.api.projects.router import router as projects_router
-from app.api.assets.router import router as assets_router
-from app.api.samples.router import router as samples_router
 from app.api.admin.router import router as admin_router
 from app.api.agent.router import router as agent_router
+
+# Optional modules (may not exist in all deployments)
+try:
+    from app.api.assets.router import router as assets_router
+except ImportError:
+    assets_router = None
+try:
+    from app.api.samples.router import router as samples_router
+except ImportError:
+    samples_router = None
 
 app = FastAPI(
     title="Infinite Canvas Backend",
@@ -31,8 +39,10 @@ app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(gateway_router, prefix=settings.API_V1_PREFIX)
 app.include_router(upload_router, prefix=settings.API_V1_PREFIX)
 app.include_router(projects_router, prefix=settings.API_V1_PREFIX)
-app.include_router(assets_router, prefix=settings.API_V1_PREFIX)
-app.include_router(samples_router, prefix=settings.API_V1_PREFIX)
+if assets_router:
+    app.include_router(assets_router, prefix=settings.API_V1_PREFIX)
+if samples_router:
+    app.include_router(samples_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 app.include_router(agent_router, prefix=settings.API_V1_PREFIX)
 

@@ -27,7 +27,7 @@ logs/
 
 # uploads / generated
 uploads/
-assets/
+/assets/
 
 # ide
 .idea/

@@ -1,0 +1,34 @@
+# env
+.env
+.env.local
+.env.production
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# node
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# logs
+*.log
+logs/
+
+# os
+.DS_Store
+
+# uploads / generated
+uploads/
+assets/
+
+# ide
+.idea/
+.vscode/

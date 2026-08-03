@@ -1,0 +1,11 @@
+{
+  "buildCommand": "",
+  "outputDirectory": "",
+  "agents": {
+    "framework": "openai-agents-sdk",
+    "timeout": 300,
+    "sandbox": {
+      "timeout": 300
+    }
+  }
+}

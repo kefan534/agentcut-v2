@@ -32,3 +32,6 @@ assets/
 # ide
 .idea/
 .vscode/
+
+# workbuddy workspace data
+/.workbuddy/

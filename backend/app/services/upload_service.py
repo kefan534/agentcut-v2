@@ -1,11 +1,14 @@
 import uuid
 import os
+import tempfile
 from pathlib import Path
 from fastapi import HTTPException, UploadFile, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.user import User
+from app.services import cos_service
 
 
 ALLOWED_EXTENSIONS = {
@@ -57,10 +60,7 @@ async def save_upload_file(
     file: UploadFile,
     current_user: User,
 ) -> dict:
-    """Save an uploaded file and return a storage key / URL.
-
-    This is shared by /api/v1/upload and /api/v1/gateway/upload.
-    """
+    """Save an uploaded file. Uses COS when configured, falls back to local disk."""
     _ensure_upload_dir()
 
     max_upload_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
@@ -73,38 +73,59 @@ async def save_upload_file(
 
     ext = Path(file.filename or "bin").suffix
     safe_name = f"{uuid.uuid4().hex}{ext}"
-    user_dir = _user_subdir(current_user.id)
-    dest = user_dir / safe_name
 
+    # Read file into memory (or use temp file for large files)
+    chunks: list[bytes] = []
+    total = 0
     try:
-        with open(dest, "wb") as buffer:
-            copied = 0
-            while True:
-                chunk = file.file.read(64 * 1024)
-                if not chunk:
-                    break
-                copied += len(chunk)
-                if copied > max_upload_bytes:
-                    raise HTTPException(status_code=413, detail="File too large")
-                buffer.write(chunk)
-    except HTTPException:
-        try:
-            os.unlink(dest)
-        except OSError:
-            pass
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        while True:
+            chunk = await file.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_upload_bytes:
+                raise HTTPException(status_code=413, detail="File too large")
+            chunks.append(chunk)
     finally:
         file.file.close()
 
-    storage_key = f"{current_user.id}/{safe_name}"
-    return {
-        "storage_key": storage_key,
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "url": f"/api/v1/upload/{storage_key}",
-    }
+    data = b"".join(chunks)
+
+    if cos_service.is_configured():
+        # Upload to COS with public-read ACL
+        try:
+            cos_url = cos_service.upload_bytes(
+                data=data,
+                prefix="uploads",
+                user_id=current_user.id,
+                content_type=file.content_type or "application/octet-stream",
+                ext=ext,
+            )
+            return {
+                "storage_key": cos_url,
+                "filename": file.filename,
+                "content_type": file.content_type,
+                "url": cos_url,
+                "storage": "cos",
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"COS upload failed: {e}")
+    else:
+        # Fallback to local disk
+        user_dir = _user_subdir(current_user.id)
+        dest = user_dir / safe_name
+        try:
+            dest.write_bytes(data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        storage_key = f"{current_user.id}/{safe_name}"
+        return {
+            "storage_key": storage_key,
+            "filename": file.filename,
+            "content_type": file.content_type,
+            "url": f"/api/v1/upload/{storage_key}",
+            "storage": "local",
+        }
 
 
 def get_upload_file_path(storage_key: str, current_user: User) -> Path:

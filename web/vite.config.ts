@@ -46,6 +46,15 @@ export default defineConfig({
             "@": resolve(webDir, "src"),
         },
     },
+    server: {
+        proxy: {
+            "/api": {
+                target: process.env.VITE_BACKEND_URL || "http://localhost:8081",
+                changeOrigin: true,
+                ws: true,
+            },
+        },
+    },
     define: {
         __APP_VERSION__: JSON.stringify(localVersion),
         __APP_RELEASES__: JSON.stringify(parseChangelog(localChangelog)),

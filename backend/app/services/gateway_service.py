@@ -3,6 +3,7 @@ import time
 import json
 import uuid
 import asyncio
+import base64
 from typing import Dict, Any, Optional, AsyncGenerator, List
 from urllib.parse import urlparse
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.model import ApiSource, VariableMapping
 from app.models.user import User
 from app.models.log import CallLog
+from app.services import cos_service
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
 
@@ -98,16 +100,50 @@ def _is_private_url(url: str) -> bool:
     return False
 
 
-def _fluxart_public_urls(value: Any) -> List[str]:
-    """Extract public http(s) URLs from a string or list of strings (private/LAN URLs are rejected)."""
+async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]:
+    """Extract public http(s) URLs. For private/data URLs: download + re-upload to COS."""
     if isinstance(value, str):
         value = [value]
     if not isinstance(value, list):
         return []
     urls: List[str] = []
     for item in value:
-        if isinstance(item, str) and item.startswith(("http://", "https://")) and not _is_private_url(item):
+        if not isinstance(item, str):
+            continue
+        # Already public
+        if item.startswith(("http://", "https://")) and not _is_private_url(item):
             urls.append(item)
+            continue
+        # data URL → decode + upload to COS
+        if item.startswith("data:"):
+            try:
+                header, b64data = item.split(",", 1)
+                mime = "image/png"
+                if "image/jpeg" in header:
+                    mime = "image/jpeg"
+                elif "image/webp" in header:
+                    mime = "image/webp"
+                img_bytes = base64.b64decode(b64data)
+                ext = ".png" if "png" in mime else ".jpg" if "jpeg" in mime else ".webp"
+                cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, mime, ext)
+                urls.append(cos_url)
+            except Exception:
+                continue
+            continue
+        # Private http URL → download + upload to COS
+        if item.startswith(("http://", "https://")) and _is_private_url(item):
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(item)
+                    resp.raise_for_status()
+                    img_bytes = resp.content
+                    ct = resp.headers.get("content-type", "image/png")
+                    ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+                    ext = ext_map.get(ct.split(";")[0].strip(), ".png")
+                    cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, ct, ext)
+                    urls.append(cos_url)
+            except Exception:
+                continue
     return urls
 
 
@@ -134,7 +170,7 @@ def _gcd(a: int, b: int) -> int:
     return b if a == 0 else _gcd(b % a, a)
 
 
-def _convert_fluxart_request(body: Dict[str, Any], is_video: bool) -> Dict[str, Any]:
+async def _convert_fluxart_request(body: Dict[str, Any], is_video: bool) -> Dict[str, Any]:
     """Convert OpenAI-ish request body into flux-art OpenAPI schema."""
     if not is_video:
         converted: Dict[str, Any] = {
@@ -145,7 +181,7 @@ def _convert_fluxart_request(body: Dict[str, Any], is_video: bool) -> Dict[str, 
         }
         refs = body.get("image") or body.get("images")
         if refs:
-            urls = _fluxart_public_urls(refs)
+            urls = await _fluxart_public_urls(refs)
             if urls:
                 converted["mode"] = "edit"
                 converted["image_urls"] = urls
@@ -178,7 +214,7 @@ def _convert_fluxart_request(body: Dict[str, Any], is_video: bool) -> Dict[str, 
         converted["resolution"] = str(body["resolution"])
     refs = body.get("image") or body.get("images")
     if refs:
-        urls = _fluxart_public_urls(refs)
+        urls = await _fluxart_public_urls(refs)
         if urls:
             converted["image_urls"] = urls
     ratio = body.get("ratio") or body.get("aspect_ratio")
@@ -284,7 +320,7 @@ async def _call_fluxart(
     if upstream_model:
         body = {**body, "model": upstream_model}
 
-    converted = _convert_fluxart_request(body, is_video)
+    converted = await _convert_fluxart_request(body, is_video)
     url = _build_upstream_url(source, endpoint)
 
     has_ref_input = bool(body.get("image") or body.get("images"))

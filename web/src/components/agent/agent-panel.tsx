@@ -80,7 +80,7 @@ export function AgentPanel() {
                         </Tooltip>
                     </div>
                 </header>
-                <CanvasEdgeoneAgentPanel embedded />
+                <CanvasEdgeoneAgentPanel embedded autoConnect />
             </motion.aside>
         </motion.div>
     );

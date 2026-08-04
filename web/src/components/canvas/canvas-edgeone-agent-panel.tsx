@@ -178,7 +178,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         const enqueueEvent = (task: () => void | Promise<void>) => {
             eventQueue = eventQueue.then(task).catch((error) => addEventLog("同步会话失败", error));
         };
-        const source = new EventSource(`${endpoint}/events?clientId=${encodeURIComponent(clientId)}`);
+        const source = new EventSource(`${endpoint}/events?clientId=${encodeURIComponent(clientId)}`, { withCredentials: true });
         source.addEventListener("hello", (event) => {
             const busy = Boolean(parseEventData<AgentHelloEvent>(event)?.codex?.busy);
             errorLoggedRef.current = false;

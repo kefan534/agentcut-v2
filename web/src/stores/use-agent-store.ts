@@ -26,8 +26,8 @@ function getStoredWidth(): number {
 }
 
 function getStoredUrl(): string {
-    if (typeof window === "undefined") return "/api/v1/agent";
-    return window.localStorage.getItem(AGENT_URL_KEY) || "/api/v1/agent";
+    if (typeof window === "undefined") return "http://localhost:8081/api/v1/agent";
+    return window.localStorage.getItem(AGENT_URL_KEY) || "http://localhost:8081/api/v1/agent";
 }
 
 type AgentStore = {

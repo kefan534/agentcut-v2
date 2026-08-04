@@ -17,6 +17,7 @@ from app.models.log import CallLog
 from app.services import cos_service
 from app.services.minimax_h3_service import generate_video as h3_generate_video
 from app.services.comfyui_service import comfyui_generate, TEXT_TO_IMAGE_WORKFLOW
+from app.services.comfyui_workflows import MINIMAX_H3_REF2VIDEO_WORKFLOW
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
 
@@ -642,31 +643,65 @@ async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, An
         if isinstance(wf_template, str):
             import json as _j
             wf_template = _j.loads(wf_template)
+    elif modal == "video":
+        # Default: MiniMax H3 reference-to-video workflow
+        wf_template = MINIMAX_H3_REF2VIDEO_WORKFLOW
     else:
         # Default: text-to-image workflow
         wf_template = TEXT_TO_IMAGE_WORKFLOW
 
-    # Inject user-provided parameters
-    # Positive prompt: node 6 (CLIPTextEncode positive)
-    # Negative prompt: node 7 (CLIPTextEncode negative)
-    # Seed: node 3 (KSampler)
-    # Reference image: node 10
+    # Clone workflow
+    import json as _j
+    wf = _j.loads(_j.dumps(wf_template))
 
-    ref_image = body.get("image") or body.get("image_urls") or body.get("images")
-    if isinstance(ref_image, list) and ref_image:
-        ref_image = ref_image[0]
-    if isinstance(ref_image, str) and not ref_image.startswith("http"):
-        ref_image = None  # skip data URLs, ComfyUI needs http URLs
+    # Inject prompt into node 5 (PrimitiveStringMultiline)
+    prompt_node = extra.get("prompt_node", "5")
+    if prompt_node in wf:
+        wf[prompt_node]["inputs"]["value"] = prompt
 
+    # Inject duration into node 6 (PrimitiveFloat)
+    duration = body.get("duration", 5)
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = 5.0
+    duration_node = extra.get("duration_node", "6")
+    if duration_node in wf:
+        wf[duration_node]["inputs"]["value"] = duration
+
+    # Randomize seed in node 13 (RandomNoise)
+    import random
+    seed_node = extra.get("seed_node", "13")
+    if seed_node in wf:
+        wf[seed_node]["inputs"]["noise_seed"] = random.randint(0, 2**63 - 1)
+
+    # Inject reference images (node 100-108: LoadImage)
+    ref_images = body.get("image_urls") or body.get("images") or body.get("image")
+    if ref_images:
+        if isinstance(ref_images, str):
+            ref_images = [ref_images]
+        if isinstance(ref_images, list):
+            for i, ref_url in enumerate(ref_images[:9]):
+                if not ref_url or not isinstance(ref_url, str):
+                    continue
+                node_id = str(100 + i)
+                if node_id not in wf:
+                    # Add a LoadImage node dynamically
+                    wf[node_id] = {
+                        "class_type": "LoadImage",
+                        "inputs": {"image": ref_url if ref_url.startswith("http") else "placeholder.png"},
+                    }
+                else:
+                    # Override image path/URL
+                    wf[node_id]["inputs"]["image"] = ref_url if ref_url.startswith("http") else "placeholder.png"
+
+    # Build img2img node inputs for workflow
+    import random as _random
     result = await comfyui_generate(
         base_url=base_url,
-        workflow=wf_template,
+        workflow=wf,
         inject_prompt=prompt,
-        inject_positive_node="6",
-        inject_negative_node="7",
-        inject_seed_node="3",
-        inject_image_node="10" if ref_image else None,
-        inject_image_url=str(ref_image) if ref_image else None,
+        inject_positive_node=extra.get("prompt_node", "5"),
         timeout=float(source.timeout_ms / 1000.0) if source.timeout_ms else 600.0,
     )
 
@@ -674,20 +709,20 @@ async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, An
     outputs = result.get("outputs", [])
 
     if files:
-        # Return base64 encoded images
         import base64 as _b64
         data = []
         for i, fbytes in enumerate(files):
-            ext = ".png"
+            fn = ""
             if outputs and i < len(outputs):
                 fn = outputs[i].get("filename", "")
-                if fn.endswith(".mp4"):
-                    ext = ".mp4"
-                elif fn.endswith(".webp"):
-                    ext = ".webp"
-                elif fn.endswith(".jpg") or fn.endswith(".jpeg"):
-                    ext = ".jpg"
-            mime = f"image/{ext[1:]}" if ext != ".mp4" else "video/mp4"
+            if fn.endswith(".mp4"):
+                mime = "video/mp4"
+            elif fn.endswith(".webp"):
+                mime = "image/webp"
+            elif fn.endswith(".jpg") or fn.endswith(".jpeg"):
+                mime = "image/jpeg"
+            else:
+                mime = "image/png"
             data.append({
                 "b64_json": _b64.b64encode(fbytes).decode("ascii"),
                 "mime_type": mime,

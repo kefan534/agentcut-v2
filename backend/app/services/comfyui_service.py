@@ -143,7 +143,13 @@ async def comfyui_generate(
 
     # Inject prompt text
     if inject_prompt and inject_positive_node in wf:
-        wf[inject_positive_node]["inputs"]["text"] = inject_prompt
+        node = wf[inject_positive_node]
+        inputs = node.get("inputs", {})
+        # Handle both CLIPTextEncode (inputs.text) and PrimitiveStringMultiline (inputs.value)
+        if "text" in inputs:
+            node["inputs"]["text"] = inject_prompt
+        elif "value" in inputs:
+            node["inputs"]["value"] = inject_prompt
     if inject_prompt and inject_negative_node in wf:
         # Keep negative prompt minimal unless explicitly set
         pass

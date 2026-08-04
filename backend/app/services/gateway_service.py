@@ -525,7 +525,9 @@ def log_call(
 def _is_h3_source(source: ApiSource) -> bool:
     """True if this source points to a Compshare MiniMax H3 Gradio instance."""
     base = (source.base_url or "").lower()
-    return "h3" in base or "minimax-h3" in (source.vendor or "").lower()
+    name = (source.source_name or "").lower()
+    vendor = (source.vendor or "").lower()
+    return any(s in blob for blob in (base, name, vendor) for s in ("h3", "minimax"))
 
 
 async def _call_minimax_h3(source: ApiSource, body: Dict[str, Any]) -> Dict[str, Any]:

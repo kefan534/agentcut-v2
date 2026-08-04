@@ -15,6 +15,7 @@ from app.models.model import ApiSource, VariableMapping
 from app.models.user import User
 from app.models.log import CallLog
 from app.services import cos_service
+from app.services.minimax_h3_service import generate_video as h3_generate_video
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
 
@@ -421,6 +422,10 @@ async def call_upstream(
     if _is_fluxart_source(source):
         return await _call_fluxart(source, headers, body, endpoint_override or source.endpoint_path or "")
 
+    # MiniMax H3 Compshare: route through the Gradio adapter
+    if _is_h3_source(source):
+        return await _call_minimax_h3(source, body)
+
     timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
     last_error = None
 
@@ -511,3 +516,92 @@ def log_call(
     )
     db.add(log)
     db.commit()
+
+
+# ---------------------------------------------------------------------------
+# MiniMax H3 Compshare adapter
+# ---------------------------------------------------------------------------
+
+def _is_h3_source(source: ApiSource) -> bool:
+    """True if this source points to a Compshare MiniMax H3 Gradio instance."""
+    base = (source.base_url or "").lower()
+    return "h3" in base or "minimax-h3" in (source.vendor or "").lower()
+
+
+async def _call_minimax_h3(source: ApiSource, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Route an AgentCut video generation request to MiniMax H3 Gradio API."""
+    base_url = (source.base_url or "").rstrip("/")
+    prompt = str(body.get("prompt", ""))
+    model_name = str(body.get("model", "")).lower()
+
+    # Determine mode from the model name or reference presence
+    has_ref_images = bool(body.get("image") or body.get("images") or body.get("image_urls"))
+    has_ref_video = bool(body.get("video") or body.get("video_urls"))
+
+    if has_ref_video or has_ref_images:
+        mode = "全能参考生成视频"
+    elif body.get("image") or body.get("first_frame"):
+        mode = "图生视频（首帧/可选尾帧）"
+    else:
+        mode = "文生视频"
+
+    # Extract reference URLs
+    ref_image_urls = []
+    ref_urls_raw = body.get("image_urls") or body.get("images") or body.get("image")
+    if isinstance(ref_urls_raw, list):
+        ref_image_urls = [str(u) for u in ref_urls_raw if u]
+    elif isinstance(ref_urls_raw, str) and ref_urls_raw.startswith("http"):
+        ref_image_urls = [ref_urls_raw]
+
+    first_frame = ref_image_urls[0] if mode == "图生视频（首帧/可选尾帧）" and ref_image_urls else None
+    last_frame = ref_image_urls[1] if mode == "图生视频（首帧/可选尾帧）" and len(ref_image_urls) > 1 else None
+
+    # Duration: default 5, from body if present
+    duration = int(body.get("duration", 5))
+    if duration < 2:
+        duration = 2
+    elif duration > 15:
+        duration = 15
+
+    # Resolution
+    size = str(body.get("size", "768x768"))
+    m = __import__("re").match(r"(\d+)[x×](\d+)", size.lower())
+    width = int(m.group(1)) if m else 768
+    height = int(m.group(2)) if m else 768
+
+    # Ensure dimensions are within valid range
+    width = max(256, min(4096, width))
+    height = max(256, min(4096, height))
+
+    # Call the H3 adapter
+    result = await h3_generate_video(
+        base_url=base_url,
+        prompt=prompt,
+        mode=mode,
+        first_frame_url=first_frame,
+        last_frame_url=last_frame,
+        ref_image_urls=ref_image_urls if mode == "全能参考生成视频" else None,
+        width=width,
+        height=height,
+        duration=duration,
+    )
+
+    video_bytes = result.get("video_bytes")
+    if video_bytes:
+        # Save video to local disk and return URL
+        import base64 as _b64
+        return {
+            "data": [
+                {
+                    "b64_json": _b64.b64encode(video_bytes).decode("ascii"),
+                    "mime_type": "video/mp4",
+                    "revised_prompt": prompt,
+                }
+            ]
+        }
+    else:
+        return {
+            "data": [],
+            "error": f"Video generation completed but no output file found. Task: {result.get('task_id','unknown')}"
+        }
+

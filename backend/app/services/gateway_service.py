@@ -16,7 +16,7 @@ from app.models.user import User
 from app.models.log import CallLog
 from app.services import cos_service
 from app.services.minimax_h3_service import generate_video as h3_generate_video
-from app.services.comfyui_service import comfyui_generate, TEXT_TO_IMAGE_WORKFLOW
+from app.services.comfyui_service import comfyui_generate, comfyui_upload_image, TEXT_TO_IMAGE_WORKFLOW
 from app.services.comfyui_workflows import MINIMAX_H3_REF2VIDEO_WORKFLOW
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
@@ -677,6 +677,7 @@ async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, An
 
     # Inject reference images (node 100-108: LoadImage)
     ref_images = body.get("image_urls") or body.get("images") or body.get("image")
+    provided_refs = []
     if ref_images:
         if isinstance(ref_images, str):
             ref_images = [ref_images]
@@ -684,16 +685,40 @@ async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, An
             for i, ref_url in enumerate(ref_images[:9]):
                 if not ref_url or not isinstance(ref_url, str):
                     continue
-                node_id = str(100 + i)
-                if node_id not in wf:
-                    # Add a LoadImage node dynamically
-                    wf[node_id] = {
-                        "class_type": "LoadImage",
-                        "inputs": {"image": ref_url if ref_url.startswith("http") else "placeholder.png"},
-                    }
+                if ref_url.startswith("data:"):
+                    continue
+                if not ref_url.startswith("http"):
+                    continue
+                provided_refs.append((i, ref_url))
+
+    # Upload images to ComfyUI input directory (ComfyUI LoadImage needs local files)
+    import httpx as _httpx
+    if provided_refs:
+        async with _httpx.AsyncClient(timeout=_httpx.Timeout(120.0, connect=15.0)) as upload_client:
+            for i, ref_url in provided_refs:
+                fname = await comfyui_upload_image(upload_client, base_url, ref_url)
+                if fname:
+                    node_id = str(100 + i)
+                    if node_id not in wf:
+                        wf[node_id] = {
+                            "class_type": "LoadImage",
+                            "inputs": {"image": fname},
+                        }
+                    else:
+                        wf[node_id]["inputs"]["image"] = fname
                 else:
-                    # Override image path/URL
-                    wf[node_id]["inputs"]["image"] = ref_url if ref_url.startswith("http") else "placeholder.png"
+                    # Mark this slot as missing
+                    provided_refs = [(idx, url) for idx, url in provided_refs if idx != i]
+
+    # Remove unset reference nodes (so ComfyUI doesn't try to load placeholder files)
+    for i in range(len(provided_refs), 9):
+        node_id = str(100 + i)
+        if node_id in wf:
+            del wf[node_id]
+        # Also remove the connection in MiniMaxH3ReferenceToVideo
+        ref_key = f"ref_images.ref_image.{i}"
+        if "9" in wf and ref_key in wf["9"].get("inputs", {}):
+            del wf["9"]["inputs"][ref_key]
 
     # Build img2img node inputs for workflow
     import random as _random

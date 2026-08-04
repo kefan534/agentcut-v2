@@ -109,6 +109,34 @@ async def comfyui_download(
     return resp.content
 
 
+async def comfyui_upload_image(
+    client: httpx.AsyncClient,
+    base_url: str,
+    image_url: str,
+) -> Optional[str]:
+    """Download image from URL and upload to ComfyUI's input directory.
+    Returns the filename to use in LoadImage, or None on failure."""
+    try:
+        # 1. Download image
+        resp = await client.get(image_url, timeout=60.0)
+        resp.raise_for_status()
+        img_bytes = resp.content
+
+        # Determine filename from URL
+        fname = image_url.split("/")[-1].split("?")[0] or f"ref_{uuid.uuid4().hex[:8]}.png"
+        if "." not in fname:
+            fname += ".png"
+
+        # 2. Upload to ComfyUI
+        files = {"image": (fname, img_bytes, "application/octet-stream")}
+        up_resp = await client.post(f"{base_url}/upload/image", files=files, timeout=60.0)
+        up_resp.raise_for_status()
+        return up_resp.json()["name"]
+    except Exception as e:
+        print(f"comfyui_upload_image error for {image_url}: {e}")
+        return None
+
+
 async def comfyui_generate(
     base_url: str,
     workflow: Dict[str, Any],

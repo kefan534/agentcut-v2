@@ -308,6 +308,8 @@ export async function deleteAsset(id: string) {
 }
 
 export function getAssetUrl(storageKey: string) {
+    if (!storageKey) return "";
+    if (/^https?:\/\//.test(storageKey)) return storageKey;
     const prefix = storageKey.startsWith("/") ? "" : "/";
     return `${BACKEND_BASE_URL}/api/v1/upload${prefix}${storageKey}`;
 }

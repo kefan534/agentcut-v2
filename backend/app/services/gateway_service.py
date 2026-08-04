@@ -382,6 +382,28 @@ def _prepare_headers_and_body(source: ApiSource, request_body: Dict[str, Any], s
     return headers, body
 
 
+async def _normalize_reference_urls(body: Dict[str, Any]) -> Dict[str, Any]:
+    """For any body field that may carry reference images, replace data URLs /
+    private URLs with public COS URLs. Applies to all upstream sources."""
+    out = dict(body)
+    # Common field names for reference images across different APIs
+    image_fields = ("image", "images", "image_urls", "reference_urls",
+                    "reference_images", "input_image", "input_images",
+                    "input_reference", "input_references")
+    for field in image_fields:
+        if field not in out:
+            continue
+        val = out[field]
+        if isinstance(val, str):
+            urls = await _fluxart_public_urls(val)
+            out[field] = urls[0] if urls else val
+        elif isinstance(val, list):
+            urls = await _fluxart_public_urls(val)
+            if urls:
+                out[field] = urls
+    return out
+
+
 async def call_upstream(
     source: ApiSource,
     request_body: Dict[str, Any],
@@ -390,6 +412,11 @@ async def call_upstream(
 ) -> Any:
     url = _build_upstream_url(source, endpoint_override)
     headers, body = _prepare_headers_and_body(source, request_body, stream)
+
+    # Normalize reference image fields for all sources: convert data URLs and
+    # private URLs into public COS URLs so upstream APIs (API易, flux-art, etc.)
+    # can download them.
+    body = await _normalize_reference_urls(body)
 
     if _is_fluxart_source(source):
         return await _call_fluxart(source, headers, body, endpoint_override or source.endpoint_path or "")

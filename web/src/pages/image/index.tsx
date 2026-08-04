@@ -138,7 +138,7 @@ export default function ImagePage() {
         setStartedAt(batchStartedAt);
 
         const taskType: "text" | "reference" = references.length > 0 ? "reference" : "text";
-        const referenceUrls = references.map((ref) => ref.dataUrl);
+        const referenceUrls = references.map((ref) => ref.url || ref.dataUrl);
         const sessionId = await createSession(text, model, taskType, referenceUrls);
 
         try {

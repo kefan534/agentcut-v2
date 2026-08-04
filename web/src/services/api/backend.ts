@@ -23,9 +23,34 @@ function onRefreshed(success: boolean) {
     refreshSubscribers = [];
 }
 
+backend.interceptors.request.use(
+    (config) => {
+        // eslint-disable-next-line no-console
+        console.log(`[api] ${config.method?.toUpperCase()} ${config.url}`);
+        return config;
+    },
+    (error) => Promise.reject(error),
+);
+
 backend.interceptors.response.use(
     (response) => response,
     async (error) => {
+        // Network errors (no response) - provide better diagnostics
+        if (!error.response) {
+            const url = error.config?.url || "?";
+            const method = error.config?.method?.toUpperCase() || "?";
+            console.error(
+                `[api] NETWORK ERROR ${method} ${url}\n` +
+                `  message: ${error.message}\n` +
+                `  code: ${error.code}\n` +
+                `  Did CORS preflight succeed? Check Network tab.`,
+            );
+            throw new Error(
+                `网络错误 ${method} ${url}：${error.message || "Failed to fetch"}。` +
+                `可能原因：1)CORS 2)后端未启动 3)本地代理 4)浏览器扩展拦截。请查看浏览器 DevTools → Network`,
+            );
+        }
+
         const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
 
         // Do not retry the refresh request itself or unauthenticated auth endpoints.

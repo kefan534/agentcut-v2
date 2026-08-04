@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.log import CallLog
 from app.services import cos_service
 from app.services.minimax_h3_service import generate_video as h3_generate_video
+from app.services.comfyui_service import comfyui_generate, TEXT_TO_IMAGE_WORKFLOW
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
 
@@ -426,6 +427,10 @@ async def call_upstream(
     if _is_h3_source(source):
         return await _call_minimax_h3(source, body)
 
+    # ComfyUI: route through the ComfyUI adapter
+    if _is_comfyui_source(source):
+        return await _call_comfyui(source, body)
+
     timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
     last_error = None
 
@@ -606,4 +611,88 @@ async def _call_minimax_h3(source: ApiSource, body: Dict[str, Any]) -> Dict[str,
             "data": [],
             "error": f"Video generation completed but no output file found. Task: {result.get('task_id','unknown')}"
         }
+
+
+# ---------------------------------------------------------------------------
+# ComfyUI adapter
+# ---------------------------------------------------------------------------
+
+def _is_comfyui_source(source: ApiSource) -> bool:
+    """True if this source is a ComfyUI instance (port 8188 or comfyui in name)."""
+    base = (source.base_url or "").lower()
+    name = (source.source_name or "").lower()
+    vendor = (source.vendor or "").lower()
+    return any(s in blob for blob in (base, name, vendor) for s in ("comfyui", "8188"))
+
+
+async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Route an AgentCut request through ComfyUI."""
+    base_url = (source.base_url or "").rstrip("/")
+    prompt = str(body.get("prompt", ""))
+    modal = (source.modal_category or "image").lower()
+
+    # Try to get a workflow template from extra_body
+    extra = source.extra_body or {}
+    if isinstance(extra, str):
+        import json as _j
+        extra = _j.loads(extra)
+
+    wf_template = extra.get("workflow")
+    if wf_template:
+        if isinstance(wf_template, str):
+            import json as _j
+            wf_template = _j.loads(wf_template)
+    else:
+        # Default: text-to-image workflow
+        wf_template = TEXT_TO_IMAGE_WORKFLOW
+
+    # Inject user-provided parameters
+    # Positive prompt: node 6 (CLIPTextEncode positive)
+    # Negative prompt: node 7 (CLIPTextEncode negative)
+    # Seed: node 3 (KSampler)
+    # Reference image: node 10
+
+    ref_image = body.get("image") or body.get("image_urls") or body.get("images")
+    if isinstance(ref_image, list) and ref_image:
+        ref_image = ref_image[0]
+    if isinstance(ref_image, str) and not ref_image.startswith("http"):
+        ref_image = None  # skip data URLs, ComfyUI needs http URLs
+
+    result = await comfyui_generate(
+        base_url=base_url,
+        workflow=wf_template,
+        inject_prompt=prompt,
+        inject_positive_node="6",
+        inject_negative_node="7",
+        inject_seed_node="3",
+        inject_image_node="10" if ref_image else None,
+        inject_image_url=str(ref_image) if ref_image else None,
+        timeout=float(source.timeout_ms / 1000.0) if source.timeout_ms else 600.0,
+    )
+
+    files = result.get("files", [])
+    outputs = result.get("outputs", [])
+
+    if files:
+        # Return base64 encoded images
+        import base64 as _b64
+        data = []
+        for i, fbytes in enumerate(files):
+            ext = ".png"
+            if outputs and i < len(outputs):
+                fn = outputs[i].get("filename", "")
+                if fn.endswith(".mp4"):
+                    ext = ".mp4"
+                elif fn.endswith(".webp"):
+                    ext = ".webp"
+                elif fn.endswith(".jpg") or fn.endswith(".jpeg"):
+                    ext = ".jpg"
+            mime = f"image/{ext[1:]}" if ext != ".mp4" else "video/mp4"
+            data.append({
+                "b64_json": _b64.b64encode(fbytes).decode("ascii"),
+                "mime_type": mime,
+            })
+        return {"data": data}
+
+    return {"data": [], "error": "ComfyUI returned no output files"}
 

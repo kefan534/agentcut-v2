@@ -980,7 +980,7 @@ function InfiniteCanvasPage() {
     }, [applyHistory]);
 
     const createAndOpenProject = useCallback(() => {
-        const id = createProject(`无限画布 ${useCanvasStore.getState().projects.length + 1}`);
+        const id = createProject(`AgentCut ${useCanvasStore.getState().projects.length + 1}`);
         navigate(`/canvas/${id}`);
     }, [createProject, navigate]);
 
@@ -995,7 +995,7 @@ function InfiniteCanvasPage() {
         if (!project) return message.error("未找到当前画布");
         const hide = message.loading("正在导出当前画布…", 0);
         try {
-            await exportCanvasProjects([project], project.title || "无限画布");
+            await exportCanvasProjects([project], project.title || "AgentCut");
             message.success("已导出当前画布");
         } catch (error) {
             console.error(error);

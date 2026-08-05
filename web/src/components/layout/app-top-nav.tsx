@@ -41,13 +41,18 @@ export function AppTopNav() {
                     <div className="mx-auto flex h-full max-w-7xl items-stretch justify-between gap-5 px-6">
                         <div className="flex min-w-0 items-center">
                             <Link to="/" className="flex h-full shrink-0 items-center gap-2 text-sm font-semibold leading-none tracking-tight text-stone-950 transition hover:text-stone-600 dark:text-stone-100 dark:hover:text-stone-300">
-                                <span
-                                    className="size-5 shrink-0 bg-current"
-                                    style={{
-                                        mask: "url(/logo.svg) center / contain no-repeat",
-                                        WebkitMask: "url(/logo.svg) center / contain no-repeat",
-                                    }}
-                                />
+                                <svg
+                                    className="size-5 shrink-0"
+                                    viewBox="0 0 64 64"
+                                    fill="currentColor"
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    aria-hidden="true"
+                                >
+                                    <rect x="4" y="4" width="24" height="24" rx="4" />
+                                    <rect x="36" y="4" width="24" height="24" rx="4" opacity="0.7" />
+                                    <rect x="4" y="36" width="24" height="24" rx="4" opacity="0.7" />
+                                    <rect x="36" y="36" width="24" height="24" rx="4" />
+                                </svg>
                                 <span className="text-base font-medium">AgentCut</span>
                             </Link>
 

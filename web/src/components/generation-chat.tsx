@@ -84,7 +84,9 @@ function SessionCard({
     onReuse?: (session: GenerationSession) => void;
 }) {
     const { message } = App.useApp();
-    const status = STATUS_MAP[session.status] || { label: session.status, color: "default" };
+    const status = session.status === "pending"
+        ? { label: session.phase === "running" ? "生成中" : "排队中", color: "blue" }
+        : STATUS_MAP[session.status] || { label: session.status, color: "default" };
     const createdAt = new Date(session.created_at).toLocaleString("zh-CN", {
         year: "numeric",
         month: "2-digit",
@@ -245,12 +247,13 @@ function ResultArea({
     onRemoveResult?: (sessionId: string, url: string) => void;
 }) {
     if (session.status === "pending") {
+        const isRunning = session.phase === "running";
         return (
             <div className="flex min-h-[200px] flex-col items-center justify-center gap-3 py-8 text-stone-500">
                 <Spin size="default" />
                 <div className="text-center">
-                    <div className="text-base font-medium">排队中</div>
-                    <div className="text-xs">已将您的任务加入队列，请耐心等待</div>
+                    <div className="text-base font-medium">{isRunning ? "生成中" : "排队中"}</div>
+                    <div className="text-xs">{isRunning ? "正在努力生成，请耐心等待" : "已将您的任务加入队列，请耐心等待"}</div>
                 </div>
             </div>
         );

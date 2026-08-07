@@ -5,6 +5,17 @@ import { dataUrlToFile } from "@/lib/image-utils";
 import { getMediaBlob, uploadMediaFile, type UploadedFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { boolConfig, buildSeedancePromptText, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
+import {
+    buildMetasoPromptText,
+    isMetasoVideoConfig,
+    isMetasoVideoModel,
+    metasoAudioReferenceError,
+    metasoVideoReferenceError,
+    METASO_VIDEO_MIME_TYPES,
+    normalizeMetasoDuration,
+    normalizeMetasoRatio,
+    normalizeMetasoResolution,
+} from "@/lib/metaso-video";
 import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import { isRemoteModel, remoteVideoGeneration, remoteVideoTaskStatus, remoteVideoTaskContent } from "./remote-gateway";
@@ -60,11 +71,12 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
 export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
     const selectedModel = (config.model || config.videoModel).trim();
     if (isRemoteModel(config, selectedModel)) {
-        if (videoReferences.length || audioReferences.length) {
-            throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / 火山 Agent Plan 模型，或移除参考资产");
+        const isMetaso = isMetasoVideoModel(modelOptionName(selectedModel));
+        if ((videoReferences.length || audioReferences.length) && !isMetaso) {
+            throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）模型，或移除参考资产");
         }
         try {
-            const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, options));
+            const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, videoReferences, audioReferences, options));
             if (!created.id) throw new Error("视频接口没有返回任务 ID");
             return { id: created.id, provider: "openai", model: selectedModel };
         } catch (error) {
@@ -78,8 +90,11 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
+    if (isMetasoVideoConfig(requestConfig)) {
+        return createMetasoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
+    }
     if (videoReferences.length || audioReferences.length) {
-        throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / 火山 Agent Plan 模型，或移除参考资产");
+        throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）模型，或移除参考资产");
     }
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
 }
@@ -221,6 +236,23 @@ async function createSeedanceTask(config: AiConfig, model: string, prompt: strin
         return { id: created.id, provider: "seedance", model };
     } catch (error) {
         throw new Error(readAxiosError(error, "Seedance 任务创建失败"));
+    }
+}
+
+async function createMetasoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions): Promise<VideoGenerationTask> {
+    const error = metasoVideoReferenceError(videoReferences);
+    if (error) throw new Error(error);
+    const audioError = metasoAudioReferenceError(audioReferences);
+    if (audioError) throw new Error(audioError);
+    if (audioReferences.length && !references.length && !videoReferences.length) {
+        throw new Error("MiniMax H3 参考音频不能单独使用，请同时添加参考图或参考视频");
+    }
+    try {
+        const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, videoReferences, audioReferences, options));
+        if (!created.id) throw new Error("MiniMax H3 接口没有返回任务 ID");
+        return { id: created.id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "MiniMax H3 任务创建失败"));
     }
 }
 

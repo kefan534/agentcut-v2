@@ -106,15 +106,21 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         const sequence = ++loadThreadsSequenceRef.current;
         setAgentState({ loadingThreads: true });
         try {
-            const data = await fetchAgentJson<AgentThreadsResponse>(endpoint, token, `/agent/codex/threads`);
+            const data = await fetchAgentJson<AgentThreadsResponse>(endpoint, token, `/codex/threads`);
             const nextThreadId = data.workspace?.activeThreadId || "";
             let nextMessages: AgentChatItem[] = [];
             if (nextThreadId && !skipHistory) {
-                const thread = await fetchAgentJson<AgentThreadResponse>(endpoint, token, `/agent/codex/threads/${encodeURIComponent(nextThreadId)}`);
+                const thread = await fetchAgentJson<AgentThreadResponse>(endpoint, token, `/codex/threads/${encodeURIComponent(nextThreadId)}`);
                 nextMessages = normalizeHistoryMessages(thread.messages || []);
             }
             if (sequence !== loadThreadsSequenceRef.current) return;
-            setAgentState({ threads: data.data || [], workspacePath: data.workspace?.workspacePath || "", activeThreadId: nextThreadId, messages: nextMessages });
+            // EdgeOne Makers 不在后端持久化对话记录，若后端返回空 activeThreadId，
+            // 贸然覆盖 messages 会把当前会话内容清空，导致消息“闪现后消失”。
+            if (nextThreadId) {
+                setAgentState({ threads: data.data || [], workspacePath: data.workspace?.workspacePath || "", activeThreadId: nextThreadId, messages: nextMessages });
+            } else {
+                setAgentState({ threads: data.data || [], workspacePath: data.workspace?.workspacePath || "" });
+            }
         } catch (error) {
             addEventLog("读取历史失败", error);
         } finally {
@@ -170,9 +176,9 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     useEffect(() => () => attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
     useEffect(() => {
-        if (!enabled || !token.trim()) return;
+        if (!enabled) return;
         localStorage.setItem("canvas-agent-url", endpoint);
-        localStorage.setItem("canvas-agent-token", token);
+        // EdgeOne Makers 模式下 token 固定为空，不再持久化到 localStorage
         const clientId = clientIdRef.current;
         let eventQueue = Promise.resolve();
         const enqueueEvent = (task: () => void | Promise<void>) => {
@@ -194,7 +200,8 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
             enqueueEvent(async () => {
                 const busy = Boolean(data.busy);
                 setAgentState({ activity: busy ? "Codex 正在运行" : "完成", waiting: busy, ...(busy ? {} : { sending: false }) });
-                if (!busy) await loadThreads();
+                // EdgeOne Makers 后端没有持久化的历史记录，每次 turn 完成都 loadThreads
+                // 会把当前会话消息清空，因此不再自动刷新历史。
             });
         });
         source.addEventListener("tool_call", (event) => {
@@ -495,7 +502,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         if (!connected || sending || waiting) return;
         setAgentState({ loadingThreads: true });
         try {
-            const data = await fetchAgentJson<AgentThreadResponse>(endpoint, token, "/agent/codex/threads/new", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+            const data = await fetchAgentJson<AgentThreadResponse>(endpoint, token, "/codex/threads/new", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
             setAgentState({ activeThreadId: data.thread?.id || data.workspace?.activeThreadId || "", messages: [], activeTab: "chat", activity: "新对话" });
         } catch (error) {
             addEventLog("新建对话失败", error);
@@ -509,7 +516,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         if (!connected || !threadId || sending || waiting) return;
         setAgentState({ loadingThreads: true });
         try {
-            const data = await fetchAgentJson<AgentThreadResponse>(endpoint, token, `/agent/codex/threads/${encodeURIComponent(threadId)}/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+            const data = await fetchAgentJson<AgentThreadResponse>(endpoint, token, `/codex/threads/${encodeURIComponent(threadId)}/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
             setAgentState({ activeThreadId: data.thread?.id || threadId, messages: normalizeHistoryMessages(data.messages || []), activeTab: "chat", activity: "已恢复会话" });
         } catch (error) {
             addEventLog("恢复对话失败", error);
@@ -523,7 +530,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         if (!connected || !threadId || sending || waiting) return;
         setAgentState({ loadingThreads: true });
         try {
-            await fetchAgentJson(endpoint, token, `/agent/codex/threads/${encodeURIComponent(threadId)}/delete`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+            await fetchAgentJson(endpoint, token, `/codex/threads/${encodeURIComponent(threadId)}/delete`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
             const current = useAgentStore.getState();
             setAgentState({
                 threads: current.threads.filter((thread) => thread.id !== threadId),
@@ -682,7 +689,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                         attachments={attachments.map(agentAttachmentToChatAttachment)}
                         disabled={!connected}
                         sending={sending || waiting}
-                        placeholder="询问 Codex，或让它操作网站/画布"
+                        placeholder="询问 Agent，或让它操作网站/画布"
                         theme={theme}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}

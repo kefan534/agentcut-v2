@@ -234,7 +234,7 @@ async def _run_transcription_job(job_id: str, request_body: Dict[str, Any], user
                     "language": request_body.get("language"),
                     "projectId": request_body.get("projectId"),
                 }
-                result = await call_upstream(source, payload)
+                result = await call_upstream(source, payload, user_id=user_id)
             else:
                 # Local mock: produce a placeholder transcript so the Palmier UI works.
                 duration = request_body.get("durationSeconds") or 0
@@ -367,7 +367,7 @@ async def agent_stream(
 # Generic gateway generation (sync / async / proxy)
 # ---------------------------------------------------------------------------
 
-def _save_generated_media(
+async def _save_generated_media(
     result: Any,
     current_user: User,
     modal_category: str,
@@ -410,11 +410,49 @@ def _save_generated_media(
             fpath.write_bytes(raw)
             urls.append(f"/api/v1/upload/{current_user.id}/{fname}")
             continue
-        # External URL (image or video)
+        # External URL (image or video): download and persist locally so the
+        # frontend is not affected by signed-URL expiration.
         ext_url = item.get("url") or item.get("video_url") or item.get("audio_url")
         if isinstance(ext_url, str) and ext_url:
-            urls.append(ext_url)
+            saved_url = await _persist_external_url(ext_url, user_dir, current_user.id, modal_category)
+            urls.append(saved_url or ext_url)
     return urls
+
+
+async def _persist_external_url(url: str, user_dir: Path, user_id: int | str, modal_category: str) -> Optional[str]:
+    """Download an external media URL and save it locally. Returns the local URL or None."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True) as client:
+            response = await client.get(url)
+            if response.status_code >= 400:
+                return None
+            content_type = response.headers.get("content-type", "").lower()
+            ext = ".bin"
+            if "mp4" in content_type:
+                ext = ".mp4"
+            elif "webm" in content_type:
+                ext = ".webm"
+            elif "png" in content_type:
+                ext = ".png"
+            elif "jpeg" in content_type or "jpg" in content_type:
+                ext = ".jpg"
+            elif "webp" in content_type:
+                ext = ".webp"
+            elif "gif" in content_type:
+                ext = ".gif"
+            elif modal_category == "video":
+                ext = ".mp4"
+            elif modal_category == "audio":
+                ext = ".mp3"
+            elif modal_category == "image":
+                ext = ".png"
+            fname = f"{uuid.uuid4().hex}{ext}"
+            fpath = user_dir / fname
+            fpath.write_bytes(response.content)
+            return f"/api/v1/upload/{user_id}/{fname}"
+    except Exception:
+        return None
 
 
 async def _save_binary_response(
@@ -501,7 +539,7 @@ async def _run_gateway(
             )
             return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-        result = await call_upstream(source, body, endpoint_override=endpoint_override)
+        result = await call_upstream(source, body, endpoint_override=endpoint_override, user_id=str(current_user.id))
         latency = (time.time() - start) * 1000
 
         # Persist generated media so it survives page reloads.
@@ -510,7 +548,7 @@ async def _run_gateway(
             saved_url = await _save_binary_response(result, current_user, content_type)
             generated_files = [saved_url]
         else:
-            generated_files = _save_generated_media(result, current_user, modal_category)
+            generated_files = await _save_generated_media(result, current_user, modal_category)
 
         log_call(
             db=db,

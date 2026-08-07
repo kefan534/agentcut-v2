@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.model import ApiSource, VariableMapping
 from app.models.user import User
 from app.models.log import CallLog
-from app.services import cos_service
+from app.services import cos_service, upload_service
 from app.services.minimax_h3_service import generate_video as h3_generate_video
 from app.services.comfyui_service import comfyui_generate, comfyui_upload_image, TEXT_TO_IMAGE_WORKFLOW
 from app.services.comfyui_workflows import MINIMAX_H3_REF2VIDEO_WORKFLOW
@@ -103,6 +103,36 @@ def _is_private_url(url: str) -> bool:
     return False
 
 
+def _is_backend_upload_url(url: str) -> bool:
+    """True when the URL points to this backend's own /api/v1/upload endpoint."""
+    try:
+        return urlparse(url).path.startswith("/api/v1/upload/")
+    except Exception:
+        return False
+
+
+def _is_gpt_image_model(model: Any) -> bool:
+    """True for OpenAI gpt-image-* models, which use output_format instead of response_format."""
+    return isinstance(model, str) and model.lower().startswith("gpt-image-")
+
+
+def _read_backend_upload_url(url: str) -> Optional[bytes]:
+    """Read a file referenced by /api/v1/upload/{user_id}/{filename} directly from disk."""
+    try:
+        parsed = urlparse(url)
+        parts = parsed.path.split("/")
+        # Expected path: /api/v1/upload/{user_id}/{filename}
+        if len(parts) < 5 or parts[1] != "api" or parts[2] != "v1" or parts[3] != "upload":
+            return None
+        storage_key = f"{parts[-2]}/{parts[-1]}"
+        file_path = upload_service._file_path_for(storage_key)
+        if file_path.exists():
+            return file_path.read_bytes()
+    except Exception:
+        return None
+    return None
+
+
 async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]:
     """Extract public http(s) URLs. For private/data URLs: download + re-upload to COS."""
     if isinstance(value, str):
@@ -136,15 +166,22 @@ async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]
         # Private http URL → download + upload to COS
         if item.startswith(("http://", "https://")) and _is_private_url(item):
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.get(item)
-                    resp.raise_for_status()
-                    img_bytes = resp.content
-                    ct = resp.headers.get("content-type", "image/png")
-                    ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
-                    ext = ext_map.get(ct.split(";")[0].strip(), ".png")
-                    cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, ct, ext)
-                    urls.append(cos_url)
+                # If the URL is served by this backend, read the file directly from disk
+                # to avoid auth/CORS issues.
+                img_bytes: Optional[bytes] = None
+                ct = "image/png"
+                if _is_backend_upload_url(item):
+                    img_bytes = _read_backend_upload_url(item)
+                if img_bytes is None:
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.get(item)
+                        resp.raise_for_status()
+                        img_bytes = resp.content
+                        ct = resp.headers.get("content-type", "image/png")
+                ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+                ext = ext_map.get(ct.split(";")[0].strip(), ".png")
+                cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, ct, ext)
+                urls.append(cos_url)
             except Exception:
                 continue
     return urls
@@ -379,29 +416,33 @@ def _prepare_headers_and_body(source: ApiSource, request_body: Dict[str, Any], s
     headers["Idempotency-Key"] = str(uuid.uuid4())
 
     body = dict(source.extra_body or {})
+    # palmier_capabilities is UI metadata for the desktop editor; never send it upstream.
+    body.pop("palmier_capabilities", None)
     body.update(request_body)
     if stream:
         body["stream"] = True
     return headers, body
 
 
-async def _normalize_reference_urls(body: Dict[str, Any]) -> Dict[str, Any]:
-    """For any body field that may carry reference images, replace data URLs /
-    private URLs with public COS URLs. Applies to all upstream sources."""
+async def _normalize_reference_urls(body: Dict[str, Any], user_id: str = "system") -> Dict[str, Any]:
+    """For any body field that may carry reference images/videos/audios, replace
+    data URLs / private URLs with public COS URLs. Applies to all upstream sources."""
     out = dict(body)
-    # Common field names for reference images across different APIs
-    image_fields = ("image", "images", "image_urls", "reference_urls",
+    # Common field names for reference media across different APIs
+    media_fields = ("image", "images", "image_urls", "reference_urls",
                     "reference_images", "input_image", "input_images",
-                    "input_reference", "input_references")
-    for field in image_fields:
+                    "input_reference", "input_references",
+                    "video", "videos", "video_urls", "reference_videos",
+                    "audio", "audios", "audio_urls", "reference_audios")
+    for field in media_fields:
         if field not in out:
             continue
         val = out[field]
         if isinstance(val, str):
-            urls = await _fluxart_public_urls(val)
+            urls = await _fluxart_public_urls(val, user_id)
             out[field] = urls[0] if urls else val
         elif isinstance(val, list):
-            urls = await _fluxart_public_urls(val)
+            urls = await _fluxart_public_urls(val, user_id)
             if urls:
                 out[field] = urls
     return out
@@ -412,6 +453,7 @@ async def call_upstream(
     request_body: Dict[str, Any],
     stream: bool = False,
     endpoint_override: Optional[str] = None,
+    user_id: str = "system",
 ) -> Any:
     url = _build_upstream_url(source, endpoint_override)
     headers, body = _prepare_headers_and_body(source, request_body, stream)
@@ -419,10 +461,20 @@ async def call_upstream(
     # Normalize reference image fields for all sources: convert data URLs and
     # private URLs into public COS URLs so upstream APIs (API易, flux-art, etc.)
     # can download them.
-    body = await _normalize_reference_urls(body)
+    body = await _normalize_reference_urls(body, user_id)
+
+    # gpt-image-* models (e.g. gpt-image-2) do not accept the legacy
+    # `response_format` parameter; they rely on `output_format` instead.
+    if _is_gpt_image_model(body.get("model")):
+        body.pop("response_format", None)
 
     if _is_fluxart_source(source):
         return await _call_fluxart(source, headers, body, endpoint_override or source.endpoint_path or "")
+
+    # Metaso MiniMax H3: official MiniMax V2 HTTP adapter (must be checked
+    # before the generic "minimax" Gradio matcher below).
+    if _is_metaso_source(source):
+        return await _call_metaso_minimax_h3(source, headers, body, endpoint_override or source.endpoint_path or "")
 
     # MiniMax H3 Compshare: route through the Gradio adapter
     if _is_h3_source(source):
@@ -755,4 +807,251 @@ async def _call_comfyui(source: ApiSource, body: Dict[str, Any]) -> Dict[str, An
         return {"data": data}
 
     return {"data": [], "error": "ComfyUI returned no output files"}
+
+
+# ---------------------------------------------------------------------------
+# Metaso MiniMax H3 adapter (official MiniMax Video Generation V2 HTTP API)
+# ---------------------------------------------------------------------------
+
+_METASO_HOST_MARKERS = ("metaso.cn",)
+
+
+def _is_metaso_source(source: ApiSource) -> bool:
+    """True if this source uses the official MiniMax V2 API via metaso.cn."""
+    base = (source.base_url or "").lower()
+    name = (source.source_name or "").lower()
+    vendor = (source.vendor or "").lower()
+    return any(marker in blob for blob in (base, name, vendor) for marker in _METASO_HOST_MARKERS)
+
+
+def _map_metaso_resolution(value: Any) -> str:
+    """Map frontend resolution values to MiniMax V2 accepted enum."""
+    s = str(value).lower()
+    if "2k" in s:
+        return "2K"
+    if "768" in s:
+        return "768P"
+    return "2K"
+
+
+def _map_metaso_ratio(size: Any) -> str:
+    """Convert a size value (16:9 / 1280x720 / auto) to a MiniMax V2 ratio."""
+    if not size:
+        return "16:9"
+    value = str(size).strip().lower()
+    if value == "auto":
+        return "16:9"
+    if re.match(r"^\d+:\d+$", value):
+        return value
+    m = re.match(r"^(\d+)[x×](\d+)$", value)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        if w > 0 and h > 0:
+            g = _gcd(w, h)
+            return f"{w // g}:{h // g}"
+    return "16:9"
+
+
+async def _convert_metaso_request(source: ApiSource, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert an AgentCut video generation body into MiniMax V2 format."""
+    prompt = str(body.get("prompt", ""))
+    if not prompt:
+        raise RuntimeError("MiniMax H3 需要非空的提示词")
+
+    video_mode = str(body.get("video_mode", "text_to_video")).lower()
+    resolution = _map_metaso_resolution(body.get("resolution"))
+    duration = int(body.get("duration", 5))
+    if duration < 4:
+        duration = 4
+    elif duration > 15:
+        duration = 15
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+
+    # Reference images
+    image = body.get("image") or body.get("images") or body.get("image_urls")
+    if isinstance(image, list):
+        image = image[0]
+
+    # Multiple reference images (for r2va)
+    ref_images: List[str] = []
+    raw_refs = body.get("image_urls") or body.get("images") or body.get("reference_images")
+    if isinstance(raw_refs, str):
+        ref_images = [raw_refs]
+    elif isinstance(raw_refs, list):
+        ref_images = [str(u) for u in raw_refs if isinstance(u, str) and u]
+    # If a single image field is present but not in the ref list, treat it as first/only ref
+    if image and isinstance(image, str) and image not in ref_images:
+        ref_images.insert(0, image)
+
+    # Reference videos / audios
+    videos = body.get("video") or body.get("videos") or body.get("video_urls")
+    ref_videos: List[str] = []
+    if isinstance(videos, str):
+        ref_videos = [videos]
+    elif isinstance(videos, list):
+        ref_videos = [str(v) for v in videos if isinstance(v, str) and v]
+
+    audios = body.get("audio") or body.get("audios") or body.get("audio_urls")
+    ref_audios: List[str] = []
+    if isinstance(audios, str):
+        ref_audios = [audios]
+    elif isinstance(audios, list):
+        ref_audios = [str(a) for a in audios if isinstance(a, str) and a]
+
+    has_r2va_assets = len(ref_images) > 1 or ref_videos or ref_audios
+
+    if has_r2va_assets:
+        # r2va: reference_image / reference_video / reference_audio
+        for url in ref_images[:9]:
+            content.append({"type": "image_url", "image_url": {"url": url}, "role": "reference_image"})
+        for url in ref_videos[:3]:
+            content.append({"type": "video_url", "video_url": {"url": url}, "role": "reference_video"})
+        for url in ref_audios[:3]:
+            content.append({"type": "audio_url", "audio_url": {"url": url}, "role": "reference_audio"})
+    elif image and isinstance(image, str):
+        # i2va: first_frame / last_frame (we only support first_frame from the UI)
+        content.append({"type": "image_url", "image_url": {"url": image}, "role": "first_frame"})
+    # else t2va: text only
+
+    ratio: Any = body.get("ratio")
+    if not ratio or str(ratio).lower() == "adaptive":
+        # t2va requires a concrete ratio; i2va ignores ratio anyway
+        if video_mode == "text_to_video" or not image:
+            ratio = _map_metaso_ratio(body.get("size")) or "16:9"
+        else:
+            ratio = "adaptive"
+
+    converted = {
+        "model": source.model_version or "MiniMax-H3",
+        "content": content,
+        "resolution": resolution,
+        "duration": duration,
+    }
+    if ratio:
+        converted["ratio"] = ratio
+
+    # Optional AIGC watermark
+    extra = source.extra_body or {}
+    if isinstance(extra, str):
+        extra = json.loads(extra)
+    if extra.get("aigc_watermark") is True:
+        converted["aigc_watermark"] = True
+
+    return converted
+
+
+async def _metaso_post_task(
+    source: ApiSource,
+    url: str,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    """POST a MiniMax V2 task-creation request."""
+    timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        response = await client.post(url, headers=headers, json=body)
+        if response.status_code >= 400:
+            err_text = response.text[:1000]
+            print(f"[metaso] POST {url} -> {response.status_code}\n  request_body={json.dumps(body, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+            raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
+        print(f"[metaso] POST {url} -> {response.status_code} body={json.dumps(body, ensure_ascii=False)}", flush=True)
+        return response.json()
+
+
+async def _metaso_get_task(
+    source: ApiSource,
+    url: str,
+    headers: Dict[str, str],
+) -> Dict[str, Any]:
+    """GET a MiniMax V2 task-query request."""
+    timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        response = await client.get(url, headers=headers)
+        if response.status_code >= 400:
+            err_text = response.text[:1000]
+            print(f"[metaso] GET {url} -> {response.status_code}\n  response_body={err_text}", flush=True)
+            raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
+        return response.json()
+
+
+async def _create_metaso_task(
+    source: ApiSource,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Submit a MiniMax V2 video generation task and return a queued task object."""
+    converted = await _convert_metaso_request(source, body)
+    base_url = (source.base_url or "").rstrip("/")
+    create_path = source.endpoint_path or "/v2/video_generation"
+    url = f"{base_url}{create_path}"
+
+    payload = await _metaso_post_task(source, url, headers, converted)
+    task_id = payload.get("task_id")
+    if not task_id:
+        raise RuntimeError(f"MiniMax H3 未返回任务 ID：{json.dumps(payload)[:300]}")
+
+    return {"id": str(task_id), "status": "queued"}
+
+
+async def _poll_metaso_task(
+    source: ApiSource,
+    headers: Dict[str, str],
+    task_id: str,
+    timeout_seconds: float = 900.0,
+) -> Dict[str, Any]:
+    """Poll GET /v2/query/video_generation/{task_id} until terminal state."""
+    base_url = (source.base_url or "").rstrip("/")
+    query_url = f"{base_url}/v2/query/video_generation/{task_id}"
+    deadline = time.time() + timeout_seconds
+    poll_timeout = httpx.Timeout(30.0, connect=10.0)
+    last_error = "任务处理超时"
+
+    while time.time() < deadline:
+        async with httpx.AsyncClient(timeout=poll_timeout, follow_redirects=False) as client:
+            response = await client.get(query_url, headers=headers)
+            if response.status_code >= 400:
+                last_error = f"{response.status_code} {response.reason_phrase} | body={response.text[:300]}"
+            else:
+                payload = response.json()
+                task = payload.get("task") if isinstance(payload, dict) else None
+                if isinstance(task, dict):
+                    status = task.get("status")
+                    if status == "succeeded":
+                        url = (task.get("content") or {}).get("url")
+                        if url:
+                            return {"id": task_id, "status": "succeeded", "video_url": url, "result_url": url, "url": url}
+                        return {"id": task_id, "status": "failed", "error": {"message": "任务成功但没有返回视频地址"}}
+                    if status in ("failed", "cancelled"):
+                        err = task.get("error") or "视频生成失败"
+                        if isinstance(err, dict):
+                            err = err.get("message") or err
+                        return {"id": task_id, "status": "failed", "error": {"message": str(err)}}
+                    if status in ("queued", "running", "pending"):
+                        last_error = "任务处理中"
+        await asyncio.sleep(3)
+
+    raise RuntimeError(f"MiniMax H3 任务超时（task_id={task_id}）: {last_error}")
+
+
+async def _call_metaso_minimax_h3(
+    source: ApiSource,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+    endpoint: str,
+) -> Any:
+    """Route a gateway request to the metaso MiniMax H3 V2 API."""
+    # Task status query: frontend polls GET /videos/{taskId} -> MiniMax GET /v2/query/video_generation/{task_id}
+    m = _VIDEO_TASK_QUERY_RE.match(endpoint)
+    if m:
+        task_id = m.group(1)
+        return await _poll_metaso_task(source, headers, task_id, timeout_seconds=600.0)
+
+    # Video generation: frontend POST /videos/generations -> MiniMax POST /v2/video_generation
+    if _VIDEO_ENDPOINT_RE.search(endpoint):
+        return await _create_metaso_task(source, headers, body)
+
+    # Fallback: forward as-is to the configured endpoint
+    url = _build_upstream_url(source, endpoint)
+    return await _metaso_post_task(source, url, headers, body)
 

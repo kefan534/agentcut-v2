@@ -4,7 +4,7 @@ export const BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://loca
 
 export const backend = axios.create({
     baseURL: `${BACKEND_BASE_URL}/api/v1`,
-    timeout: 360000,
+    timeout: 900000,
     withCredentials: true,
 });
 
@@ -144,12 +144,12 @@ export async function fetchAvailableModels() {
 }
 
 export async function proxyGateway(variableName: string, endpoint: string, body: Record<string, unknown>, stream = false): Promise<unknown> {
-    const { data } = await backend.post<unknown>(`/gateway/${variableName}/proxy`, { endpoint, body, stream });
+    const { data } = await backend.post<unknown>(`/gateway/${encodeURIComponent(variableName)}/proxy`, { endpoint, body, stream });
     return data;
 }
 
 export async function proxyGatewayStream(variableName: string, endpoint: string, body: Record<string, unknown>) {
-    const response = await fetch(`${BACKEND_BASE_URL}/api/v1/gateway/${variableName}/proxy`, {
+    const response = await fetch(`${BACKEND_BASE_URL}/api/v1/gateway/${encodeURIComponent(variableName)}/proxy`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -217,6 +217,7 @@ export type GenerationSession = {
     prompt: string;
     model: string;
     status: "pending" | "success" | "failed";
+    phase?: "queued" | "running";
     reference_urls: string[];
     result_urls: string[];
     error_message: string | null;

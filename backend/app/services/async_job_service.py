@@ -101,7 +101,7 @@ async def submit_and_run(
         job["status"] = "running"
 
         try:
-            result = await call_upstream(source, request_body)
+            result = await call_upstream(source, request_body, user_id=str(user.id))
             job["status"] = "succeeded"
             job["result_urls"] = _extract_result_urls(result)
             job["completed_at"] = _now_ms()

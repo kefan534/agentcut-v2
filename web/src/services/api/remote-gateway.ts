@@ -1,7 +1,19 @@
 import * as backendApi from "./backend";
 import { type AiConfig, modelOptionName } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
+import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
+import { getMediaBlob, uploadMediaFile } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
+import {
+  buildMetasoPromptText,
+  isMetasoVideoModel,
+  metasoAudioReferenceError,
+  metasoVideoReferenceError,
+  METASO_VIDEO_MIME_TYPES,
+  normalizeMetasoDuration,
+  normalizeMetasoRatio,
+  normalizeMetasoResolution,
+} from "@/lib/metaso-video";
 
 export type RequestOptions = { signal?: AbortSignal };
 
@@ -178,6 +190,7 @@ export async function remoteImageEdit(config: AiConfig, prompt: string, referenc
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
+    const isGptImage = model.toLowerCase().startsWith("gpt-image-");
 
     if (references.length === 0) {
         // No references: use generations endpoint
@@ -188,7 +201,7 @@ export async function remoteImageEdit(config: AiConfig, prompt: string, referenc
             ...(quality ? { quality } : {}),
             ...(requestSize ? { size: requestSize } : {}),
             ...(background ? { background } : {}),
-            response_format: "b64_json",
+            ...(!isGptImage ? { response_format: "b64_json" } : {}),
             output_format: IMAGE_OUTPUT_FORMAT,
         });
         return response;
@@ -206,7 +219,7 @@ export async function remoteImageEdit(config: AiConfig, prompt: string, referenc
         ...(quality ? { quality } : {}),
         ...(requestSize ? { size: requestSize } : {}),
         ...(background ? { background } : {}),
-        response_format: "b64_json",
+        ...(!isGptImage ? { response_format: "b64_json" } : {}),
         output_format: IMAGE_OUTPUT_FORMAT,
         image: refs,
     });
@@ -307,9 +320,20 @@ function normalizeVideoResolution(value: string) {
     return `${resolution}p`;
 }
 
-export async function remoteVideoGeneration(config: AiConfig, prompt: string, references: ReferenceImage[] = [], options?: RequestOptions): Promise<Record<string, unknown>> {
+export async function remoteVideoGeneration(
+    config: AiConfig,
+    prompt: string,
+    references: ReferenceImage[] = [],
+    videoReferences: ReferenceVideo[] = [],
+    audioReferences: ReferenceAudio[] = [],
+    options?: RequestOptions,
+): Promise<Record<string, unknown>> {
     const selectedModel = config.model || config.videoModel;
     const model = modelOptionName(selectedModel);
+
+    if (isMetasoVideoModel(model)) {
+        return remoteMetasoVideoGeneration(config, model, prompt, references, videoReferences, audioReferences, options);
+    }
 
     // Prefer public http(s) URLs when every reference has one (flux-art requires public URLs).
     const usePublic = allReferencesPublic(references);
@@ -331,6 +355,80 @@ export async function remoteVideoGeneration(config: AiConfig, prompt: string, re
     return response as Record<string, unknown>;
 }
 
+async function remoteMetasoVideoGeneration(
+    config: AiConfig,
+    model: string,
+    prompt: string,
+    references: ReferenceImage[],
+    videoReferences: ReferenceVideo[],
+    audioReferences: ReferenceAudio[],
+    options?: RequestOptions,
+): Promise<Record<string, unknown>> {
+    const imageError = metasoVideoReferenceError(videoReferences);
+    if (imageError) throw new Error(imageError);
+    const audioError = metasoAudioReferenceError(audioReferences);
+    if (audioError) throw new Error(audioError);
+
+    const imageUrls = await Promise.all(references.slice(0, 9).map((image) => resolveMetasoImageUrl(image)));
+    const videoUrls = await Promise.all(videoReferences.slice(0, 3).map((video) => resolveMetasoVideoUrl(video)));
+    const audioUrls = await Promise.all(audioReferences.slice(0, 3).map((audio) => resolveMetasoAudioUrl(audio)));
+
+    const body: Record<string, unknown> = {
+        model,
+        prompt: buildMetasoPromptText(prompt, references, videoReferences, audioReferences),
+        duration: normalizeMetasoDuration(config.videoSeconds),
+        resolution: normalizeMetasoResolution(config.vquality),
+        ratio: normalizeMetasoRatio(config.size),
+    };
+
+    if (imageUrls.length === 1 && !videoUrls.length && !audioUrls.length) {
+        body.video_mode = "image_to_video";
+        body.image = imageUrls[0];
+    } else if (imageUrls.length > 1 || videoUrls.length || audioUrls.length) {
+        body.video_mode = "reference_to_video";
+        if (imageUrls.length) body.image_urls = imageUrls;
+        if (videoUrls.length) body.video = videoUrls;
+        if (audioUrls.length) body.audio = audioUrls;
+    } else {
+        body.video_mode = "text_to_video";
+    }
+
+    const response = await backendApi.proxyGateway(model, "/videos/generations", body);
+    return response as Record<string, unknown>;
+}
+
+function isPublicMediaUrl(value: string) {
+    return /^https?:\/\//i.test(value || "");
+}
+
+async function resolveMetasoImageUrl(image: ReferenceImage) {
+    const directUrl = image.url || image.dataUrl;
+    if (isPublicMediaUrl(directUrl)) return directUrl;
+    const dataUrl = await imageToDataUrl(image);
+    if (!dataUrl) throw new Error("参考图读取失败，请换一张图片或重新上传");
+    return dataUrl;
+}
+
+async function resolveMetasoVideoUrl(video: ReferenceVideo) {
+    if (isPublicMediaUrl(video.url)) return video.url;
+    let blob: Blob | null = null;
+    if (video.storageKey) blob = await getMediaBlob(video.storageKey);
+    if (!blob && video.url?.startsWith("blob:")) blob = await (await fetch(video.url)).blob();
+    if (!blob) throw new Error("参考视频必须是公网 URL、资产 ID，或本地已保存的视频");
+    const uploaded = await uploadMediaFile(blob, "video-reference", { preferBackend: true });
+    return uploaded.url;
+}
+
+async function resolveMetasoAudioUrl(audio: ReferenceAudio) {
+    if (isPublicMediaUrl(audio.url)) return audio.url;
+    let blob: Blob | null = null;
+    if (audio.storageKey) blob = await getMediaBlob(audio.storageKey);
+    if (!blob && audio.url?.startsWith("blob:")) blob = await (await fetch(audio.url)).blob();
+    if (!blob) throw new Error("参考音频必须是公网 URL、资产 ID，或本地已保存的音频");
+    const uploaded = await uploadMediaFile(blob, "audio-reference", { preferBackend: true });
+    return uploaded.url;
+}
+
 export async function remoteVideoTaskStatus(config: AiConfig, taskId: string, options?: RequestOptions): Promise<Record<string, unknown>> {
     const selectedModel = config.model || config.videoModel;
     const model = modelOptionName(selectedModel);
@@ -341,7 +439,7 @@ export async function remoteVideoTaskStatus(config: AiConfig, taskId: string, op
 export async function remoteVideoTaskContent(config: AiConfig, taskId: string, options?: RequestOptions) {
     const selectedModel = config.model || config.videoModel;
     const model = modelOptionName(selectedModel);
-    const url = `${backendApi.BACKEND_BASE_URL}/api/v1/gateway/${model}/proxy`;
+    const url = `${backendApi.BACKEND_BASE_URL}/api/v1/gateway/${encodeURIComponent(model)}/proxy`;
     const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -363,7 +461,7 @@ export async function remoteAudioGeneration(config: AiConfig, prompt: string, op
     const format = normalizeAudioFormatValue(config.audioFormat);
     const instructions = config.audioInstructions.trim();
 
-    const url = `${backendApi.BACKEND_BASE_URL}/api/v1/gateway/${model}/proxy`;
+    const url = `${backendApi.BACKEND_BASE_URL}/api/v1/gateway/${encodeURIComponent(model)}/proxy`;
     const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

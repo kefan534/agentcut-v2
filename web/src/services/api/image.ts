@@ -757,6 +757,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
+    const isGptImage = requestConfig.model.toLowerCase().startsWith("gpt-image-");
     try {
         const response = await axios.post<ImageApiResponse>(
             aiApiUrl(requestConfig, "/images/generations"),
@@ -767,7 +768,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 ...(quality ? { quality } : {}),
                 ...(requestSize ? { size: requestSize } : {}),
                 ...(background ? { background } : {}),
-                response_format: "b64_json",
+                ...(!isGptImage ? { response_format: "b64_json" } : {}),
                 output_format: IMAGE_OUTPUT_FORMAT,
             },
             {
@@ -859,11 +860,14 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(quality, config.size);
     const background = normalizeBackground(config.background);
+    const isGptImage = requestConfig.model.toLowerCase().startsWith("gpt-image-");
     const formData = new FormData();
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
     formData.set("n", String(n));
-    formData.set("response_format", "b64_json");
+    if (!isGptImage) {
+        formData.set("response_format", "b64_json");
+    }
     formData.set("output_format", IMAGE_OUTPUT_FORMAT);
     if (quality) {
         formData.set("quality", quality);

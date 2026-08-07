@@ -12,6 +12,7 @@ import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeVa
 import { canvasThemes } from "@/lib/canvas-theme";
 import { formatDuration } from "@/lib/image-utils";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceRatio, seedanceReferenceLabel, seedanceVideoReferenceError, seedanceVideoReferenceHint, SEEDANCE_REFERENCE_LIMITS, SEEDANCE_VIDEO_MIME_TYPES } from "@/lib/seedance-video";
+import { isMetasoVideoConfig, isMetasoVideoModel, metasoAudioReferenceError, metasoReferenceLabel, metasoVideoReferenceError, metasoVideoReferenceHint, normalizeMetasoDuration, normalizeMetasoRatio, normalizeMetasoResolution } from "@/lib/metaso-video";
 import { uploadMediaFile } from "@/services/file-storage";
 import { uploadImage } from "@/services/image-storage";
 import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
@@ -31,6 +32,8 @@ export default function VideoPage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const activeTaskIdsRef = useRef<Set<string>>(new Set());
+    const runningModelsRef = useRef<Set<string>>(new Set());
+    const modelQueuesRef = useRef<Record<string, Array<{ sessionId: string; task: VideoGenerationTask; taskConfig: AiConfig; agentTaskId?: string }>>>({});
     const config = useConfigStore((state) => state.config);
     const isAuthenticated = useUserStore((state) => state.isAuthenticated);
     const effectiveConfig = useEffectiveConfig();
@@ -158,26 +161,47 @@ export default function VideoPage() {
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: "视频生成参数无效" });
             return;
         }
-        setElapsedMs(0);
-        setRunning(true);
-        if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
-        setStartedAt(performance.now());
 
         const hasReference = snapshot.references.length > 0 || snapshot.videoReferences.length > 0 || snapshot.audioReferences.length > 0;
         const taskType: "text" | "reference" = hasReference ? "reference" : "text";
         const referenceUrls = snapshot.references.map((ref) => ref.dataUrl);
         const sessionId = await createSession(snapshot.text, model, taskType, referenceUrls);
+        // 新创建的 session 先标记为排队等待
+        void markSessionPhase(sessionId, "queued");
 
         try {
             const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, snapshot.videoReferences, snapshot.audioReferences);
-            void pollTask(sessionId, task, snapshot.config, agentTaskId);
+            scheduleTask(sessionId, task, snapshot.config, agentTaskId);
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : "生成失败";
             await updateSession(sessionId, "failed", [], errorMessage);
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
             message.error(errorMessage);
-            setRunning(false);
         }
+    };
+
+    const scheduleTask = (sessionId: string, task: VideoGenerationTask, taskConfig: AiConfig, agentTaskId?: string) => {
+        const taskModel = taskConfig.videoModel || taskConfig.model;
+        if (runningModelsRef.current.has(taskModel)) {
+            // 同一模型已有任务正在生成，加入该模型队列
+            if (!modelQueuesRef.current[taskModel]) modelQueuesRef.current[taskModel] = [];
+            modelQueuesRef.current[taskModel].push({ sessionId, task, taskConfig, agentTaskId });
+            return;
+        }
+        startTask(sessionId, task, taskConfig, agentTaskId);
+    };
+
+    const startTask = (sessionId: string, task: VideoGenerationTask, taskConfig: AiConfig, agentTaskId?: string) => {
+        const taskModel = taskConfig.videoModel || taskConfig.model;
+        runningModelsRef.current.add(taskModel);
+        if (runningModelsRef.current.size === 1) {
+            setElapsedMs(0);
+            setStartedAt(performance.now());
+        }
+        setRunning(true);
+        if (agentTaskId) updateAgentTask(agentTaskId, { status: "running", error: undefined });
+        void markSessionPhase(sessionId, "running");
+        void pollTask(sessionId, task, taskConfig, agentTaskId);
     };
 
     const pollTask = async (sessionId: string, task: VideoGenerationTask, taskConfig: AiConfig, agentTaskId?: string) => {
@@ -212,7 +236,19 @@ export default function VideoPage() {
             message.error(errorMessage);
         } finally {
             activeTaskIdsRef.current.delete(sessionId);
-            if (!activeTaskIdsRef.current.size) {
+            const taskModel = taskConfig.videoModel || taskConfig.model;
+            runningModelsRef.current.delete(taskModel);
+
+            // 同一模型队列中的下一个任务立即开始
+            const queue = modelQueuesRef.current[taskModel];
+            if (queue && queue.length > 0) {
+                const next = queue.shift();
+                if (next) {
+                    startTask(next.sessionId, next.task, next.taskConfig, next.agentTaskId);
+                }
+            }
+
+            if (!runningModelsRef.current.size) {
                 setRunning(false);
                 setStartedAt(0);
             }
@@ -252,9 +288,15 @@ export default function VideoPage() {
             openConfigDialog(true);
             return null;
         }
-        const videoReferenceError = seedanceVideoReferenceError(videoReferences);
+        const metaso = isMetasoVideoModel(model);
+        const videoReferenceError = metaso ? metasoVideoReferenceError(videoReferences) : seedanceVideoReferenceError(videoReferences);
+        const audioReferenceError = metaso ? metasoAudioReferenceError(audioReferences) : "";
         if (videoReferenceError) {
-            message.error(`${videoReferenceError}。${seedanceVideoReferenceHint}`);
+            message.error(`${videoReferenceError}。${metaso ? metasoVideoReferenceHint : seedanceVideoReferenceHint}`);
+            return null;
+        }
+        if (audioReferenceError) {
+            message.error(audioReferenceError);
             return null;
         }
         return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references], videoReferences: [...videoReferences], audioReferences: [...audioReferences] };
@@ -297,6 +339,10 @@ export default function VideoPage() {
             setPrompt(session.prompt);
             void generate();
         }
+    };
+
+    const markSessionPhase = (sessionId: string, phase: "queued" | "running") => {
+        void updateSession(sessionId, "pending", [], undefined, phase);
     };
 
     return (
@@ -412,7 +458,7 @@ export default function VideoPage() {
                             <span>{modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s</span>
                             <span>{formatDuration(elapsedMs)}</span>
                         </div>
-                        <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
+                        <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} disabled={!canGenerate} onClick={() => void generate()}>
                             开始生成
                         </Button>
                         <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
@@ -547,6 +593,19 @@ function filterAudioReferencesByDuration(existing: ReferenceAudio[], next: Refer
 }
 
 function buildVideoConfig(config: AiConfig, model: string): AiConfig {
+    const metaso = isMetasoVideoConfig({ ...config, model });
+    if (metaso) {
+        return {
+            ...config,
+            model,
+            videoModel: model,
+            size: normalizeMetasoRatio(config.size),
+            videoSeconds: String(normalizeMetasoDuration(config.videoSeconds)),
+            vquality: normalizeMetasoResolution(config.vquality),
+            videoGenerateAudio: String(boolConfig(config.videoGenerateAudio, true)),
+            videoWatermark: String(boolConfig(config.videoWatermark, false)),
+        };
+    }
     const seedance = isSeedanceVideoConfig({ ...config, model });
     return {
         ...config,

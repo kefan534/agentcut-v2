@@ -88,23 +88,25 @@ export function useGenerationHistory(modalCategory: "image" | "video") {
     const createSession = useCallback(
         async (prompt: string, model: string, taskType: "text" | "reference" = "text", referenceUrls: string[] = []) => {
             const session = await createGenerationSession(modalCategory, prompt, model, taskType, referenceUrls);
-            setSessions((prev) => [...prev, session]);
-            const [userMsg, assistantMsg] = sessionToMessages(session, modalCategory);
+            const sessionWithPhase = { ...session, phase: "queued" as const };
+            setSessions((prev) => [...prev, sessionWithPhase]);
+            const [userMsg, assistantMsg] = sessionToMessages(sessionWithPhase, modalCategory);
             setMessages((prev) => [...prev, userMsg, assistantMsg]);
             return session.id;
         },
         [modalCategory],
     );
 
-    const updateSession = useCallback(async (sessionId: string, status: string, media?: ChatMedia[], error?: string) => {
+    const updateSession = useCallback(async (sessionId: string, status: string, media?: ChatMedia[], error?: string, phase?: "queued" | "running") => {
         const resultUrls = media?.map((item) => item.url) || [];
+        // phase 是前端本地状态，不持久化到后端
         const updated = await updateGenerationSession(sessionId, {
             status,
             result_urls: resultUrls,
             error_message: error || null,
         });
         setSessions((prev) =>
-            prev.map((session) => (session.id === sessionId ? { ...session, ...updated, result_urls: resultUrls } : session)),
+            prev.map((session) => (session.id === sessionId ? { ...session, ...updated, result_urls: resultUrls, phase: phase ?? session.phase } : session)),
         );
         setMessages((prev) =>
             prev.map((msg) =>

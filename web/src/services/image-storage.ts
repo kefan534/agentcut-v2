@@ -78,10 +78,32 @@ export async function setImageBlob(storageKey: string, blob: Blob) {
     return url;
 }
 
+function isBackendUrl(url: string) {
+    return url.startsWith(backendApi.BACKEND_BASE_URL);
+}
+
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    const url = image.dataUrl || (await resolveImageUrl(image.storageKey, image.url || ""));
-    if (!url || url.startsWith("data:")) return url;
-    return blobToDataUrl(await (await fetch(url)).blob());
+    if (image.dataUrl) return image.dataUrl;
+
+    // Backend-persisted images: read through authenticated helper to avoid 401/CORS.
+    if (image.storageKey && isBackendStorageKey(image.storageKey)) {
+        const blob = await getImageBlob(image.storageKey);
+        if (blob) return blobToDataUrl(blob);
+        throw new Error("读取参考图片失败：后端文件不存在");
+    }
+
+    const url = await resolveImageUrl(image.storageKey, image.url || "");
+    if (!url) throw new Error("读取参考图片失败：缺少图片地址");
+    if (url.startsWith("data:")) return url;
+
+    try {
+        const response = await fetch(url, { credentials: isBackendUrl(url) ? "include" : "same-origin" });
+        if (!response.ok) throw new Error(`读取图片失败：HTTP ${response.status}`);
+        return blobToDataUrl(await response.blob());
+    } catch (error) {
+        const message = error instanceof Error ? error.message : "未知错误";
+        throw new Error(`读取参考图片失败：${message}`);
+    }
 }
 
 export async function deleteStoredImages(keys: Iterable<string>) {

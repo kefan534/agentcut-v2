@@ -1,8 +1,17 @@
 import { type ReactNode } from "react";
-import { Switch } from "antd";
+import { Slider, Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
+import {
+  isMetasoVideoConfig,
+  metasoDurationOptions,
+  metasoRatioOptions,
+  metasoResolutionOptions,
+  normalizeMetasoDuration,
+  normalizeMetasoRatio,
+  normalizeMetasoResolution,
+} from "@/lib/metaso-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { type AiConfig } from "@/stores/use-config-store";
 
@@ -37,6 +46,10 @@ type VideoSettingsPanelProps = {
 export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
     if (isSeedanceVideoConfig(config)) {
         return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+
+    if (isMetasoVideoConfig(config)) {
+        return <MetasoVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
     const seconds = config.videoSeconds || "6";
@@ -90,14 +103,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     </div>
                 </SettingGroup>
                 <SettingGroup title="秒数" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {secondOptions.map((value) => (
-                            <OptionPill key={value} selected={seconds === String(value)} theme={theme} onClick={() => onConfigChange("videoSeconds", String(value))}>
-                                {value}s
-                            </OptionPill>
-                        ))}
-                        <NumberInput value={seconds} min={1} max={20} theme={theme} onChange={(value) => onConfigChange("videoSeconds", value)} />
-                    </div>
+                    <DurationSlider value={Number(seconds) || 6} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>
@@ -157,6 +163,50 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
                         <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} />
                         <SwitchRow label="添加水印" checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} />
                     </div>
+                </SettingGroup>
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function MetasoVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
+    const resolution = normalizeMetasoResolution(config.vquality);
+    const ratio = normalizeMetasoRatio(config.size);
+    const duration = normalizeMetasoDuration(config.videoSeconds);
+
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
+                <SettingGroup title="分辨率" color={theme.node.muted}>
+                    <div className="grid grid-cols-2 gap-2.5">
+                        {metasoResolutionOptions.map((item) => (
+                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                                {item.label}
+                            </OptionPill>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="比例" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-2.5">
+                        {metasoRatioOptions.map((item) => (
+                            <button
+                                key={item.value}
+                                type="button"
+                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
+                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => onConfigChange("size", item.value)}
+                            >
+                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
+                                <span>{item.label}</span>
+                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
+                            </button>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="时长" color={theme.node.muted}>
+                    <DurationSlider value={duration} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>
@@ -235,6 +285,30 @@ function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: 
 
 function NumberInput({ value, min, max, theme, onChange }: { value: string; min: number; max: number; theme: CanvasTheme; onChange: (value: string) => void }) {
     return <input type="number" min={min} max={max} className="h-9 rounded-full border bg-transparent px-3 text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" style={{ borderColor: theme.node.stroke, color: theme.node.text, WebkitTextFillColor: theme.node.text }} value={value} onChange={(event) => onChange(event.target.value)} onMouseDown={(event) => event.stopPropagation()} />;
+}
+
+function DurationSlider({ value, min = 4, max = 15, theme, onChange }: { value: number; min?: number; max?: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+    const clamped = Math.max(min, Math.min(max, Number(value) || min));
+    return (
+        <div className="flex items-center gap-3">
+            <div className="flex-1" onMouseDown={(event) => event.stopPropagation()}>
+                <Slider
+                    min={min}
+                    max={max}
+                    step={1}
+                    value={clamped}
+                    onChange={onChange}
+                    styles={{
+                        track: { background: theme.node.text },
+                        tracks: { background: theme.node.text },
+                        handle: { borderColor: theme.node.text, background: theme.node.text },
+                    }}
+                />
+            </div>
+            <NumberInput value={String(clamped)} min={min} max={max} theme={theme} onChange={(next) => onChange(Math.max(min, Math.min(max, Number(next) || min)))} />
+            <span className="text-sm" style={{ color: theme.node.muted }}>s</span>
+        </div>
+    );
 }
 
 function SizePreview({ width, height, color }: { width: number; height: number; color: string }) {

@@ -717,7 +717,7 @@ export function CanvasLocalAgentPanel({ embedded, headless, autoConnect }: { emb
                         attachments={attachments.map(agentAttachmentToChatAttachment)}
                         disabled={!connected}
                         sending={sending || waiting}
-                        placeholder="询问 Codex，或让它操作网站/画布"
+                        placeholder="询问 Agent，或让它操作网站/画布"
                         theme={theme}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}

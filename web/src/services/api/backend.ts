@@ -15,6 +15,20 @@ const authBackend = axios.create({
     withCredentials: true,
 });
 
+// In-memory access token used for EventSource (SSE) connections where custom
+// headers are not supported. We deliberately do NOT persist this to localStorage
+// to reduce XSS risk; it is refreshed on page load via cookie-based /auth/me or
+// /auth/refresh on the first authenticated request.
+let memoryAccessToken: string | null = null;
+
+export function setMemoryAccessToken(token: string | null) {
+    memoryAccessToken = token;
+}
+
+export function getMemoryAccessToken(): string | null {
+    return memoryAccessToken;
+}
+
 let isRefreshing = false;
 let refreshSubscribers: Array<(success: boolean) => void> = [];
 
@@ -115,16 +129,19 @@ export type AvailableModel = {
 };
 
 export async function registerUser(email: string, password: string, nickname?: string) {
-    const { data } = await backend.post<BackendUser>("/auth/register", { email, password, nickname });
+    const { data } = await backend.post<BackendUser & { access_token?: string; refresh_token?: string; token_type?: string }>("/auth/register", { email, password, nickname });
+    if (data.access_token) setMemoryAccessToken(data.access_token);
     return data;
 }
 
 export async function loginUser(email: string, password: string) {
     const { data } = await backend.post<{ access_token: string; refresh_token: string; token_type: string }>("/auth/login", { email, password });
+    setMemoryAccessToken(data.access_token);
     return data;
 }
 
 export async function logoutUser() {
+    setMemoryAccessToken(null);
     await backend.post("/auth/logout");
 }
 
@@ -135,6 +152,7 @@ export async function fetchMe() {
 
 export async function refreshToken() {
     const { data } = await authBackend.post<{ access_token: string; refresh_token: string; token_type: string }>("/auth/refresh");
+    setMemoryAccessToken(data.access_token);
     return data;
 }
 

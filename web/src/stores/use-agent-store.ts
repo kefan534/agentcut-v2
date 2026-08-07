@@ -18,6 +18,7 @@ let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
 const AGENT_URL_KEY = "canvas-agent-url";
 const AGENT_TOKEN_KEY = "canvas-agent-token";
+const DEFAULT_AGENT_URL = "/api/v1/agent";
 
 function getStoredWidth(): number {
     if (typeof window === "undefined") return 440;
@@ -25,9 +26,21 @@ function getStoredWidth(): number {
     return raw ? Number(raw) || 440 : 440;
 }
 
+function migrateLegacyAgentUrl(raw: string | null): string {
+    if (!raw) return DEFAULT_AGENT_URL;
+    // 旧版本默认把绝对地址 http://localhost:8081/api/v1/agent 存到 localStorage，
+    // 这会让浏览器绕过 Vite/nginx 代理直接跨端口请求后端，导致 SameSite=Lax cookie 不发送、
+    // SSE 认证失败。自动迁移为相对路径，让请求走当前站点代理。
+    if (/^https?:\/\/(localhost|127\.0\.0\.1):\d+\/api\/v1\/agent\/?$/i.test(raw)) {
+        return DEFAULT_AGENT_URL;
+    }
+    return raw;
+}
+
 function getStoredUrl(): string {
-    if (typeof window === "undefined") return "http://localhost:8081/api/v1/agent";
-    return window.localStorage.getItem(AGENT_URL_KEY) || "http://localhost:8081/api/v1/agent";
+    if (typeof window === "undefined") return DEFAULT_AGENT_URL;
+    const raw = window.localStorage.getItem(AGENT_URL_KEY);
+    return migrateLegacyAgentUrl(raw);
 }
 
 type AgentStore = {
@@ -112,10 +125,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     setCanvasContext: (canvasContext) => set({ canvasContext }),
     connectAgent: (options) => {
         const silent = options?.silent ?? false;
-        const endpoint = get().url.trim().replace(/\/$/, "");
+        const endpoint = migrateLegacyAgentUrl(get().url.trim().replace(/\/$/, ""));
         if (!endpoint) return set({ connectError: silent ? "" : "Agent 地址未配置" });
         window.localStorage.setItem(AGENT_URL_KEY, endpoint);
-        // EdgeOne Makers 模式下不再使用本地 token
+        // EdgeOne Makers 模式下不再使用本地 token；内存 token 由 backend.ts 在登录后写入
         set({ url: endpoint, token: "", enabled: true, silentConnect: silent, activity: "连接中", connectError: "" });
     },
     disconnectAgent: (patch = {}) => {

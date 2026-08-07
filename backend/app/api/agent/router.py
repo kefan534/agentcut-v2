@@ -17,7 +17,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocketException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from app.core.config import settings
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, get_current_user_optional
+from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.user import User
 
@@ -188,6 +189,38 @@ def _build_conversation_id(user_id: str, thread_id: Optional[str]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+async def _get_current_user_for_sse(
+    request: Request,
+    token: Optional[str] = Query(None, alias="token"),
+    db: Session = Depends(get_db),
+) -> User:
+    """Authenticate SSE requests.
+
+    EventSource cannot set custom headers, so when the request is cross-origin
+    and the httpOnly cookie is not sent (e.g. dev with absolute backend URL),
+    the frontend can pass the access token as a query parameter.
+    """
+    # 1. Try the standard cookie / Authorization header path first.
+    user = get_current_user_optional(request, db=db)
+    if user:
+        return user
+    # 2. Fall back to query token.
+    if token:
+        payload = decode_token(token)
+        if payload and payload.get("type") == "access":
+            user_id = payload.get("sub")
+            if user_id:
+                from uuid import UUID
+                try:
+                    UUID(user_id)
+                    user = db.query(User).filter(User.id == user_id, User.status == "active").first()
+                    if user:
+                        return user
+                except ValueError:
+                    pass
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
 # -----------------------------------------------------------------------------
 # SSE endpoint — same shape as the local canvas-agent /events
 # -----------------------------------------------------------------------------
@@ -196,7 +229,7 @@ def _build_conversation_id(user_id: str, thread_id: Optional[str]) -> str:
 async def agent_events(
     request: Request,
     client_id: str = Query(..., alias="clientId"),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_get_current_user_for_sse),
 ):
     user_id = str(current_user.id)
     queues = _get_user_queues(user_id)

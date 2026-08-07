@@ -10,6 +10,7 @@ import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { uploadImage } from "@/services/image-storage";
+import { getMemoryAccessToken } from "@/services/api/backend";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useShallow } from "zustand/react/shallow";
@@ -184,7 +185,15 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         const enqueueEvent = (task: () => void | Promise<void>) => {
             eventQueue = eventQueue.then(task).catch((error) => addEventLog("同步会话失败", error));
         };
-        const source = new EventSource(`${endpoint}/events?clientId=${encodeURIComponent(clientId)}`, { withCredentials: true });
+        const isAbsoluteUrl = /^https?:\/\//i.test(endpoint);
+        const memoryToken = getMemoryAccessToken();
+        const eventSourceUrl = new URL(`${endpoint}/events`, window.location.href);
+        eventSourceUrl.searchParams.set("clientId", clientId);
+        if (isAbsoluteUrl && memoryToken) {
+            // 跨域绝对地址时 cookie 经常因 SameSite=Lax 不发送，回退到 query token。
+            eventSourceUrl.searchParams.set("token", memoryToken);
+        }
+        const source = new EventSource(eventSourceUrl.toString(), { withCredentials: true });
         source.addEventListener("hello", (event) => {
             const busy = Boolean(parseEventData<AgentHelloEvent>(event)?.codex?.busy);
             errorLoggedRef.current = false;
@@ -248,9 +257,19 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         source.onerror = () => {
             const wasConnected = connectedRef.current;
             const silent = useAgentStore.getState().silentConnect && !wasConnected;
-            const text = wasConnected ? "本地 Agent 连接失败或已断开" : "连接失败，请检查地址和 token";
+            const absoluteUrl = /^https?:\/\//i.test(endpoint);
+            let text = wasConnected
+                ? "本地 Agent 连接失败或已断开"
+                : "连接失败：未登录，或登录状态无法用于 SSE（请尝试刷新页面后重新登录）";
+            if (!wasConnected) {
+                if (absoluteUrl) {
+                    text = `连接失败：Agent URL「${endpoint}」为绝对地址，浏览器不会携带本站登录 cookie。建议改为相对路径「/api/v1/agent」，或重新登录后再试。`;
+                } else if (!getMemoryAccessToken()) {
+                    text = "连接失败：未检测到登录 token，请先登录账号后再连接 Agent。";
+                }
+            }
             if (!errorLoggedRef.current || wasConnected) {
-                addEventLog(wasConnected ? "连接断开" : "连接失败", { endpoint, error: text });
+                addEventLog(wasConnected ? "连接断开" : "连接失败", { endpoint, error: text, absoluteUrl, hasToken: Boolean(getMemoryAccessToken()) });
                 if (!headless && !silent) message.error(text);
             }
             errorLoggedRef.current = true;
@@ -333,7 +352,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         if (!connected || (!sending && !waiting)) return;
         setAgentState({ activity: "停止中" });
         try {
-            await fetch(`${endpoint}/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: useAgentStore.getState().activeThreadId || undefined }), credentials: "include" });
+            await fetch(`${endpoint}/interrupt`, { method: "POST", headers: { "content-type": "application/json", ...authHeaders() }, body: JSON.stringify({ threadId: useAgentStore.getState().activeThreadId || undefined }), credentials: "include" });
             addEventLog("用户停止", {});
         } catch {
             setAgentState({ activity: "停止失败" });
@@ -947,7 +966,7 @@ async function postState(endpoint: string, _token: string, clientId: string, sna
     try {
         await fetch(`${endpoint}/canvas/state?clientId=${encodeURIComponent(clientId)}`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", ...authHeaders() },
             body: JSON.stringify(snapshot ? { ...snapshot, hasCanvas: true } : { hasCanvas: false }),
             credentials: "include",
         });
@@ -956,12 +975,12 @@ async function postState(endpoint: string, _token: string, clientId: string, sna
 
 async function activateAgentClient(endpoint: string, _token: string, clientId: string) {
     try {
-        await fetch(`${endpoint}/canvas/activate?clientId=${encodeURIComponent(clientId)}`, { method: "POST", credentials: "include" });
+        await fetch(`${endpoint}/canvas/activate?clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: authHeaders(), credentials: "include" });
     } catch {}
 }
 
 async function postToolResult(endpoint: string, _token: string, clientId: string, body: { requestId: string; result?: unknown; error?: string }) {
-    await fetch(`${endpoint}/canvas/result?clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), credentials: "include" });
+    await fetch(`${endpoint}/canvas/result?clientId=${encodeURIComponent(clientId)}`, { method: "POST", headers: { "content-type": "application/json", ...authHeaders() }, body: JSON.stringify(body), credentials: "include" });
 }
 
 function agentMessageToChatMessage(item: AgentChatItem) {
@@ -1233,9 +1252,15 @@ function dataUrlToBlob(dataUrl: string): Promise<Blob> {
     });
 }
 
+function authHeaders(): Record<string, string> {
+    const token = getMemoryAccessToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchAgentJson<T>(endpoint: string, _token: string, path: string, init?: RequestInit) {
     const url = `${endpoint}${path}`;
-    const res = await fetch(url, { credentials: "include", ...init });
+    const headers = { ...authHeaders(), ...(init?.headers || {}) };
+    const res = await fetch(url, { credentials: "include", ...init, headers });
     const data = (await res.json().catch(() => ({}))) as T & { error?: string; msg?: string };
     if (!res.ok) throw new Error(data.error || data.msg || "Agent 请求失败");
     return data;

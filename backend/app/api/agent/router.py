@@ -201,7 +201,7 @@ async def _get_current_user_for_sse(
     the frontend can pass the access token as a query parameter.
     """
     # 1. Try the standard cookie / Authorization header path first.
-    user = get_current_user_optional(request, db=db)
+    user = get_current_user_optional(request, credentials=None, db=db)
     if user:
         return user
     # 2. Fall back to query token.

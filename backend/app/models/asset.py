@@ -10,7 +10,8 @@ class Asset(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    asset_type = Column(String(32), nullable=False, index=True)  # image | video | audio | text
+    # asset_type: image | video | audio | text | document (P0+: document added)
+    asset_type = Column(String(32), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     storage_key = Column(String(512), nullable=False)  # local path or object key
     mime_type = Column(String(128), nullable=True)
@@ -21,6 +22,14 @@ class Asset(Base):
     prompt = Column(Text, nullable=True)
     meta = Column(JSONB, nullable=False, default={})
     project_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+
+    # P0: parsing / OCR
+    text = Column(Text, nullable=True)                     # parser/OCR output
+    text_status = Column(String(16), nullable=True)        # pending/parsing/ready/failed
+    text_length = Column(Integer, nullable=True)           # cached length for quota
+    text_error = Column(String(512), nullable=True)        # last error message
+    ocr_used = Column(String(32), nullable=True)           # tencent-ocr / paddleocr / none
+
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

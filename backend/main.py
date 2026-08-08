@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
+from app.db.session import Base, engine
 from app.api.auth.router import router as auth_router
 from app.api.gateway.router import router as gateway_router
 from app.api.upload.router import router as upload_router
@@ -49,6 +50,23 @@ app.include_router(agent_router, prefix=settings.API_V1_PREFIX)
 
 # Ensure upload directory exists (no public static mount; files served via /api/v1/upload)
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+
+
+@app.on_event("startup")
+def _init_schema() -> None:
+    """Lightweight schema bootstrap.
+
+    Creates any missing tables (for P0 additions like `agent_audit_logs` and
+    extended `assets` columns). Idempotent — alembic remains the source of
+    truth for production migrations.
+    """
+    # Import models so their tables register on Base.metadata.
+    from app.models import agent_audit_log  # noqa: F401  (side-effect import)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:  # pragma: no cover
+        import logging
+        logging.getLogger(__name__).warning("create_all failed: %s", exc)
 
 
 @app.exception_handler(Exception)

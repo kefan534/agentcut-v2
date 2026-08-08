@@ -191,6 +191,21 @@ def _build_conversation_id(user_id: str, thread_id: Optional[str]) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+def _extract_bearer_token(request: Request) -> Optional[str]:
+    """Manually extract Bearer token from the Authorization header.
+
+    SSE endpoints do not reliably receive HTTPBearer credentials when called
+    directly, so we read the raw header as a fallback.
+    """
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth:
+        return None
+    parts = auth.split()
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1]
+    return None
+
+
 async def _get_current_user_for_sse(
     request: Request,
     token: Optional[str] = Query(None, alias="token"),
@@ -202,20 +217,35 @@ async def _get_current_user_for_sse(
     and the httpOnly cookie is not sent (e.g. dev with absolute backend URL),
     the frontend can pass the access token as a query parameter.
     """
-    # 1. Try the standard cookie / Authorization header path first.
+    from uuid import UUID
+
+    # 1. Try the Authorization header manually (HTTPBearer can be unreliable for SSE).
+    bearer = _extract_bearer_token(request)
+    if bearer:
+        payload = decode_token(bearer)
+        if payload and payload.get("type") == "access":
+            user_id = payload.get("sub")
+            if user_id:
+                try:
+                    user = db.query(User).filter(User.id == UUID(user_id), User.status == "active").first()
+                    if user:
+                        return user
+                except ValueError:
+                    pass
+
+    # 2. Try the standard cookie path (httpOnly access_token).
     user = get_current_user_optional(request, credentials=None, db=db)
     if user:
         return user
-    # 2. Fall back to query token.
+
+    # 3. Fall back to query token.
     if token:
         payload = decode_token(token)
         if payload and payload.get("type") == "access":
             user_id = payload.get("sub")
             if user_id:
-                from uuid import UUID
                 try:
-                    UUID(user_id)
-                    user = db.query(User).filter(User.id == user_id, User.status == "active").first()
+                    user = db.query(User).filter(User.id == UUID(user_id), User.status == "active").first()
                     if user:
                         return user
                 except ValueError:

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { ChevronDown, Copy, FolderOpen, History, LoaderCircle, MessageSquare, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, Download, ExternalLink, Film, FolderOpen, History, ImageIcon, LoaderCircle, MessageSquare, Music, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2 } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -49,6 +49,8 @@ type AgentCodexState = { busy?: boolean; threadId?: string; turnId?: string };
 type AgentHelloEvent = { ok?: boolean; clientId?: string; codex?: AgentCodexState };
 type AgentWorkspaceEvent = { activeThreadId?: string; threadId?: string; emptyThread?: boolean };
 type AgentChatEvent = { threadId?: string; sourceClientId?: string; message?: AgentChatItem };
+type AgentOutputItem = { id: string; request_id: string; modal_category: string; variable_name: string; cost_credits: number; url: string; created_at?: string };
+type AgentOutputsResponse = { ok?: boolean; data?: AgentOutputItem[] };
 
 export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { embedded?: boolean; headless?: boolean; autoConnect?: boolean }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
@@ -100,6 +102,8 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     const attachmentUrlsRef = useRef(new Set<string>());
     const clientIdRef = useRef(randomId());
     const loadThreadsSequenceRef = useRef(0);
+    const [outputs, setOutputs] = useState<AgentOutputItem[]>([]);
+    const [loadingOutputs, setLoadingOutputs] = useState(false);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     const loadThreads = useCallback(async (skipHistory = false) => {
@@ -128,6 +132,18 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
             if (sequence === loadThreadsSequenceRef.current) setAgentState({ loadingThreads: false });
         }
     }, [endpoint, setAgentState, token]);
+
+    const loadOutputs = useCallback(async () => {
+        setLoadingOutputs(true);
+        try {
+            const data = await fetchAgentJson<AgentOutputsResponse>(endpoint, token, `/outputs`);
+            setOutputs(data.data || []);
+        } catch (error) {
+            addEventLog("读取产物失败", error);
+        } finally {
+            setLoadingOutputs(false);
+        }
+    }, [endpoint, token]);
 
     // canvasContext 命令式订阅：保持 ref 最新，并在快照变化时防抖上报，全程不触发面板重渲染。
     useEffect(() => {
@@ -175,6 +191,13 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         return () => cancelAnimationFrame(frame);
     }, [activeTab, messages, pendingTool, scrollToBottom, updateScrollState, waiting]);
     useEffect(() => () => attachmentUrlsRef.current.forEach((url) => URL.revokeObjectURL(url)), []);
+
+    useEffect(() => {
+        // 普通用户不应看到 setup/log 页；若当前 tab 对他们不可见，则切到对话页。
+        if (user?.role !== "admin" && (activeTab === "setup" || activeTab === "log")) {
+            setAgentState({ activeTab: "chat" });
+        }
+    }, [user?.role, activeTab, setAgentState]);
 
     useEffect(() => {
         if (!enabled) return;
@@ -287,9 +310,10 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         };
     }, [enabled, endpoint, loadThreads, message, setAgentState, token]);
 
-    useEffect(() => {
-        if (connected) void loadThreads();
-    }, [connected, loadThreads]);
+    // Do not auto-load threads on connect/reconnect: EdgeOne Makers keeps history
+    // in memory only, and a race with an ongoing turn can replace the current
+    // chat with stale history and make messages appear out of order or disappear.
+    // Threads are loaded explicitly when the user opens the History tab.
 
     useEffect(() => {
         if (!connected) return;
@@ -580,22 +604,25 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     const addMessage = (item: Omit<AgentChatItem, "id"> & { id?: string }) => {
         const text = normalizeText(item.text);
         if (!text && !item.attachments?.length) return;
-        const next = { ...item, id: item.id || `${Date.now()}-${Math.random()}`, text } as AgentChatItem;
+        const now = Date.now();
+        const next = { ...item, id: item.id || `${now}-${Math.random()}`, text, createdAt: item.createdAt || now } as AgentChatItem;
         const currentMessages = useAgentStore.getState().messages;
         if (currentMessages.some((message) => message.id === next.id)) return;
+        // Streamed assistant messages share a streamId; update the existing message
+        // in place so the text grows smoothly instead of creating duplicates.
         if (next.streamId) {
             const index = currentMessages.findIndex((message) => message.streamId === next.streamId);
             if (index >= 0) {
-                setAgentState({ messages: currentMessages.map((message, i) => (i === index ? { ...message, ...next, id: message.id, text: next.text || message.text } : message)) });
+                const existing = currentMessages[index];
+                setAgentState({
+                    messages: currentMessages.map((message, i) =>
+                        i === index
+                            ? { ...message, ...next, id: message.id, text: next.text || message.text, createdAt: message.createdAt || next.createdAt }
+                            : message,
+                    ),
+                });
                 return;
             }
-        }
-        const last = currentMessages.at(-1);
-        if (last?.role === "assistant" && next.role === "assistant" && last.title === next.title) {
-            const merged = mergeAgentText(last.text, next.text);
-            if (merged === last.text) return;
-            setAgentState({ messages: [...useAgentStore.getState().messages.slice(0, -1), { ...last, text: merged, meta: next.meta || last.meta }] });
-            return;
         }
         pushMessage(next);
     };
@@ -617,14 +644,16 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                 value={activeTab}
                 theme={theme}
                 items={[
-                    { value: "setup", label: "连接", icon: <PlugZap className="size-3.5" /> },
-                    { value: "chat", label: "对话", icon: <MessageSquare className="size-3.5" /> },
-                    { value: "history", label: "历史", icon: <History className="size-3.5" />, count: threads.length },
-                    { value: "log", label: "日志", icon: <Terminal className="size-3.5" />, count: eventLogs.length },
+                    ...(user?.role === "admin" ? [{ value: "setup" as AgentPanelTab, label: "连接", icon: <PlugZap className="size-3.5" /> }] : []),
+                    { value: "chat" as AgentPanelTab, label: "对话", icon: <MessageSquare className="size-3.5" /> },
+                    { value: "outputs" as AgentPanelTab, label: "产物", icon: <FolderOpen className="size-3.5" /> },
+                    { value: "history" as AgentPanelTab, label: "历史", icon: <History className="size-3.5" />, count: threads.length },
+                    ...(user?.role === "admin" ? [{ value: "log" as AgentPanelTab, label: "日志", icon: <Terminal className="size-3.5" />, count: eventLogs.length }] : []),
                 ]}
                 onChange={(activeTab) => {
                     setAgentState({ activeTab });
                     if (activeTab === "history") void loadThreads();
+                    if (activeTab === "outputs") void loadOutputs();
                 }}
                 right={
                     <>
@@ -670,6 +699,13 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                     onClear={clearEventLogs}
                     onCopied={(text) => message.success(text)}
                     onCopyBlocked={(text) => message.warning(text)}
+                />
+            ) : activeTab === "outputs" ? (
+                <AgentOutputsView
+                    outputs={outputs}
+                    loading={loadingOutputs}
+                    theme={theme}
+                    onRefresh={() => void loadOutputs()}
                 />
             ) : (
                 <>
@@ -730,6 +766,117 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
 
     if (headless) return null;
     return embedded ? content : null;
+}
+
+function AgentOutputsView({
+    outputs,
+    loading,
+    theme,
+    onRefresh,
+}: {
+    outputs: AgentOutputItem[];
+    loading: boolean;
+    theme: (typeof canvasThemes)[keyof typeof canvasThemes];
+    onRefresh: () => void;
+}) {
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const isImage = (url: string, category: string) => category === "image" || /\.(jpe?g|png|webp|gif|bmp)(\?|$)/i.test(url);
+    const isVideo = (url: string, category: string) => category === "video" || /\.(mp4|mov|webm|mkv)(\?|$)/i.test(url);
+    const isAudio = (url: string, category: string) => category === "audio" || /\.(mp3|wav|m4a|aac|ogg)(\?|$)/i.test(url);
+
+    const handleDownload = async (url: string, category: string) => {
+        try {
+            const response = await fetch(url);
+            const blob = await response.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = blobUrl;
+            const ext = category === "video" ? "mp4" : category === "audio" ? "mp3" : "png";
+            link.download = `agentcut-output-${Date.now()}.${ext}`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(blobUrl);
+        } catch {
+            window.open(url, "_blank");
+        }
+    };
+
+    return (
+        <div className="thin-scrollbar flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
+            <div className="mb-3 flex items-center justify-between">
+                <div className="text-base font-semibold leading-6">生成产物</div>
+                <Button size="small" icon={<RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />} onClick={onRefresh} loading={loading}>
+                    刷新
+                </Button>
+            </div>
+            {outputs.length === 0 ? (
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 text-sm" style={{ color: theme.node.muted }}>
+                    <FolderOpen className="size-8 opacity-50" />
+                    <span>暂无生成产物</span>
+                </div>
+            ) : (
+                <div className="grid grid-cols-2 gap-3">
+                    {outputs.map((item) => (
+                        <div
+                            key={item.id}
+                            className="group relative overflow-hidden rounded-lg border"
+                            style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }}
+                        >
+                            {isImage(item.url, item.modal_category) ? (
+                                <img
+                                    src={item.url}
+                                    alt={item.variable_name}
+                                    className="aspect-video w-full cursor-zoom-in object-cover"
+                                    onClick={() => setPreviewUrl(item.url)}
+                                />
+                            ) : isVideo(item.url, item.modal_category) ? (
+                                <video
+                                    src={item.url}
+                                    className="aspect-video w-full cursor-pointer object-cover"
+                                    controls
+                                    preload="metadata"
+                                    onClick={() => setPreviewUrl(item.url)}
+                                />
+                            ) : isAudio(item.url, item.modal_category) ? (
+                                <div className="flex aspect-video w-full items-center justify-center">
+                                    <Music className="size-10 opacity-50" />
+                                </div>
+                            ) : (
+                                <div className="flex aspect-video w-full items-center justify-center">
+                                    <Film className="size-10 opacity-50" />
+                                </div>
+                            )}
+                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/60 px-2 py-1.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
+                                <span className="truncate">{item.variable_name}</span>
+                                <div className="flex items-center gap-1">
+                                    <Button size="small" type="text" icon={<Download className="size-3.5 text-white" />} onClick={() => void handleDownload(item.url, item.modal_category)} />
+                                    <Button size="small" type="text" icon={<ExternalLink className="size-3.5 text-white" />} onClick={() => window.open(item.url, "_blank")} />
+                                </div>
+                            </div>
+                            {isAudio(item.url, item.modal_category) && (
+                                <audio src={item.url} controls className="w-full px-2 pb-2 pt-1" />
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+            {previewUrl && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+                    onClick={() => setPreviewUrl(null)}
+                >
+                    <div className="max-h-full max-w-full overflow-auto" onClick={(e) => e.stopPropagation()}>
+                        {/\.(mp4|mov|webm|mkv)(\?|$)/i.test(previewUrl) ? (
+                            <video src={previewUrl} controls className="max-h-[80vh] max-w-[90vw] rounded-lg" />
+                        ) : (
+                            <img src={previewUrl} alt="preview" className="max-h-[80vh] max-w-[90vw] rounded-lg object-contain" />
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+    );
 }
 
 function AgentLogView({

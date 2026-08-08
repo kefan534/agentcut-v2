@@ -60,6 +60,9 @@ AGENT_PROMPT = (
     "视频创作台对应 workbench_video_get_config 与 workbench_video_generate；用 prompts_search 分页搜索提示词库；"
     "用 assets_list 查看「我的素材」、assets_add 新增文本或图片素材。"
     "需要生成内容时直接调用对应生成工具，不要绑定特定业务场景。不要模拟鼠标点击，不要要求用户手动复制 JSON。"
+    "所有图片/视频/音频/文本生成都需要消耗用户积分（查询余额用 get_user_credits）。"
+    "如果用户询问自己有多少积分、余额是否足够、或请求生成内容，先调用 get_user_credits 查询当前积分；"
+    "余额为 0 或不足时，明确告知用户积分不足并停止生成操作，不要继续调用会消耗积分的工具。"
 )
 
 LLM_CLIENT = AsyncOpenAI(
@@ -138,6 +141,12 @@ async def _bridge_tool(name: str, tool_input: Any) -> str:
 # NOTE: All params that would normally be Dict/List with generics use plain
 # `object` or `list` to avoid Pydantic `additionalProperties` errors on Makers.
 # -----------------------------------------------------------------------------
+
+@function_tool
+def get_user_credits() -> str:
+    """Query the current user's credit balance. Call this before any generation task."""
+    return asyncio.run(_bridge_tool("get_user_credits", {}))
+
 
 @function_tool
 def site_navigate(path: str) -> str:
@@ -484,6 +493,7 @@ def assets_add(kind: str, title: str, content: str = "", image_url: str = "", ta
 
 
 TOOLS = [
+    get_user_credits,
     site_navigate,
     canvas_list_projects,
     canvas_get_state,

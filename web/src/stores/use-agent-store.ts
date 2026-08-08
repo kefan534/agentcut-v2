@@ -5,12 +5,12 @@ import { encryptText, decryptText } from "@/lib/secure-storage";
 
 export type AgentChatRole = "user" | "assistant" | "system" | "tool" | "error";
 export type AgentAttachment = { id: string; name: string; type: string; size: number; width: number; height: number; url: string; dataUrl: string };
-export type AgentChatItem = { id: string; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentAttachment[]; streamId?: string };
+export type AgentChatItem = { id: string; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentAttachment[]; streamId?: string; createdAt?: number };
 export type AgentEventLog = { id: string; time: string; title: string; text: string; raw?: unknown };
 export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown> };
 export type AgentCanvasContext = { snapshot: CanvasAgentSnapshot; applyOps: (ops?: CanvasAgentOp[]) => CanvasAgentSnapshot; undoOps: () => CanvasAgentSnapshot | null; canUndo: boolean };
 export type AgentThreadSummary = { id: string; preview: string; name?: string | null; cwd?: string; status?: string; source?: unknown; createdAt?: number; updatedAt?: number };
-export type AgentPanelTab = "chat" | "setup" | "history" | "log";
+export type AgentPanelTab = "chat" | "setup" | "history" | "log" | "outputs";
 
 const CONNECT_TIMEOUT_MS = 6000;
 let agentSource: EventSource | null = null;
@@ -107,7 +107,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     activeThreadId: "",
     workspacePath: "",
     loadingThreads: false,
-    activeTab: "setup",
+    activeTab: "chat",
     confirmTools: true,
     activity: "就绪",
     connectError: "",
@@ -138,7 +138,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         connectTimer = null;
         set({ enabled: false, connected: false, silentConnect: false, activity: "离线", ...patch });
     },
-    addMessage: (item) => set((state) => ({ messages: [...state.messages.slice(-120), item] })),
+    addMessage: (item) =>
+        set((state) => {
+            const now = Date.now();
+            const next = { ...item, createdAt: item.createdAt || now };
+            const messages = [...state.messages.slice(-120), next];
+            // Stable sort by createdAt to keep Q&A in chronological order even if
+            // SSE events arrive out of order.
+            messages.sort((a, b) => (a.createdAt || now) - (b.createdAt || now));
+            return { messages };
+        }),
     addEventLog: (item) => set((state) => ({ eventLogs: [...state.eventLogs.slice(-160), item] })),
     clearEventLogs: () => set({ eventLogs: [] }),
     loadPersistedToken: async () => {

@@ -29,6 +29,8 @@ from app.core.deps import get_current_user, get_current_user_optional
 from app.core.security import decode_token
 from app.db.session import get_db
 from app.models.user import User
+from app.models.log import CallLog
+from app.services.credit_service import get_user_credits, deduct_credits
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
@@ -431,6 +433,16 @@ async def agent_tool_bridge(
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required")
 
+    # Built-in agent-side tools that don't need browser execution.
+    if payload.tool == "get_user_credits":
+        try:
+            db = next(get_db())
+            from uuid import UUID
+            balance = get_user_credits(db, UUID(user_id))
+            return {"ok": True, "result": {"balance": balance}}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to query credits: {exc}")
+
     request_id = payload.request_id
     client_id = payload.client_id or _active_clients.get(user_id)
     tool_payload = {
@@ -595,3 +607,45 @@ async def agent_delete_thread(thread_id: str, current_user: User = Depends(get_c
     if thread_id in user_threads:
         del user_threads[thread_id]
     return {"ok": True}
+
+
+# -----------------------------------------------------------------------------
+# Outputs — generated images/videos/audios produced through the gateway
+# -----------------------------------------------------------------------------
+
+@router.get("/outputs")
+async def agent_outputs(
+    modal_category: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the current user's successful media generations for the Agent panel."""
+    query = db.query(CallLog).filter(
+        CallLog.user_id == current_user.id,
+        CallLog.status == "success",
+        CallLog.modal_category.in_(["image", "video", "audio"]),
+    )
+    if modal_category:
+        query = query.filter(CallLog.modal_category == modal_category)
+    rows = query.order_by(CallLog.created_at.desc()).limit(limit).all()
+
+    outputs = []
+    for row in rows:
+        summary = row.response_summary or {}
+        files = summary.get("generated_files") or []
+        if not isinstance(files, list):
+            files = [files] if files else []
+        for url in files:
+            if not url:
+                continue
+            outputs.append({
+                "id": f"{row.id}:{url}",
+                "request_id": row.request_id,
+                "modal_category": row.modal_category,
+                "variable_name": row.variable_name,
+                "cost_credits": row.cost_credits,
+                "url": url,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            })
+    return {"ok": True, "data": outputs}

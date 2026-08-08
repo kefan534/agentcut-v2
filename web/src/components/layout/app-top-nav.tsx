@@ -67,25 +67,27 @@ export function AppTopNav() {
                             </button>
 
                             <nav className="hide-scrollbar ml-8 hidden h-14 min-w-0 items-center gap-7 overflow-x-auto md:flex">
-                                {navigationTools.map((tool) => {
-                                    const Icon = tool.icon;
-                                    const active = tool.slug === activeToolSlug;
-                                    return (
-                                        <Link
-                                            key={tool.slug}
-                                            to={`/${tool.slug}`}
-                                            className={cn(
-                                                "relative flex h-14 shrink-0 items-center gap-2 text-sm leading-6 transition after:absolute after:inset-x-0 after:bottom-0 after:h-px",
-                                                active
-                                                    ? "font-medium text-stone-950 after:bg-stone-950 dark:text-stone-100 dark:after:bg-stone-100"
-                                                    : "text-stone-500 after:bg-transparent hover:text-stone-950 dark:text-stone-400 dark:hover:text-stone-100",
-                                            )}
-                                        >
-                                            <Icon className="size-4" />
-                                            <span className="truncate">{tool.label}</span>
-                                        </Link>
-                                    );
-                                })}
+                                {navigationTools
+                                    .filter((tool) => !tool.adminOnly || currentUser?.role === "admin")
+                                    .map((tool) => {
+                                        const Icon = tool.icon;
+                                        const active = tool.slug === activeToolSlug;
+                                        return (
+                                            <Link
+                                                key={tool.slug}
+                                                to={`/${tool.slug}`}
+                                                className={cn(
+                                                    "relative flex h-14 shrink-0 items-center gap-2 text-sm leading-6 transition after:absolute after:inset-x-0 after:bottom-0 after:h-px",
+                                                    active
+                                                        ? "font-medium text-stone-950 after:bg-stone-950 dark:text-stone-100 dark:after:bg-stone-100"
+                                                        : "text-stone-500 after:bg-transparent hover:text-stone-950 dark:text-stone-400 dark:hover:text-stone-100",
+                                                )}
+                                            >
+                                                <Icon className="size-4" />
+                                                <span className="truncate">{tool.label}</span>
+                                            </Link>
+                                        );
+                                    })}
                                 {currentUser?.role === "admin" ? (
                                     <Link
                                         to="/admin"

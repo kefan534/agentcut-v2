@@ -5,6 +5,8 @@ import { encryptText, decryptText } from "@/lib/secure-storage";
 
 export type AgentChatRole = "user" | "assistant" | "system" | "tool" | "error";
 export type AgentAttachment = { id: string; name: string; type: string; size: number; width: number; height: number; url: string; dataUrl: string };
+export type AgentAssetRef = { assetId: string; name: string; kind: string; mimeType?: string; url: string; thumbnailUrl?: string; skillId?: string; promptFragment?: string };
+export type AgentModelOption = { id: string; name: string; supportsTools: boolean; costPerTurn: number };
 export type AgentChatItem = { id: string; role: AgentChatRole; title?: string; text: string; meta?: string; detail?: unknown; attachments?: AgentAttachment[]; streamId?: string; createdAt?: number };
 export type AgentEventLog = { id: string; time: string; title: string; text: string; raw?: unknown };
 export type AgentPendingToolCall = { requestId: string; name: string; input?: { ops?: CanvasAgentOp[]; path?: string } & Record<string, unknown> };
@@ -57,6 +59,10 @@ type AgentStore = {
     silentConnect: boolean;
     prompt: string;
     attachments: AgentAttachment[];
+    assetRefs: AgentAssetRef[];
+    modelId: string;
+    availableModels: AgentModelOption[];
+    modelsLoading: boolean;
     sending: boolean;
     waiting: boolean;
     messages: AgentChatItem[];
@@ -70,17 +76,21 @@ type AgentStore = {
     activity: string;
     connectError: string;
     pendingTool: AgentPendingToolCall | null;
-    setAgentState: (patch: Partial<Omit<AgentStore, "setAgentState" | "connectAgent" | "disconnectAgent" | "addMessage" | "addEventLog" | "clearEventLogs" | "openPanel" | "closePanel" | "togglePanel" | "setCanvasContext" | "loadPersistedToken">>) => void;
+    setAgentState: (patch: Partial<Omit<AgentStore, "setAgentState" | "connectAgent" | "disconnectAgent" | "addMessage" | "addEventLog" | "clearEventLogs" | "openPanel" | "closePanel" | "togglePanel" | "setCanvasContext" | "loadPersistedToken" | "addAssetRef" | "removeAssetRef" | "fetchModels" | "setModel">>) => void;
     openPanel: () => void;
     closePanel: () => void;
     togglePanel: () => void;
     setCanvasContext: (context: AgentCanvasContext | null) => void;
     connectAgent: (options?: { silent?: boolean }) => void;
-    disconnectAgent: (patch?: Partial<Omit<AgentStore, "setAgentState" | "connectAgent" | "disconnectAgent" | "addMessage" | "addEventLog" | "clearEventLogs" | "openPanel" | "closePanel" | "togglePanel" | "setCanvasContext" | "loadPersistedToken">>) => void;
+    disconnectAgent: (patch?: Partial<Omit<AgentStore, "setAgentState" | "connectAgent" | "disconnectAgent" | "addMessage" | "addEventLog" | "clearEventLogs" | "openPanel" | "closePanel" | "togglePanel" | "setCanvasContext" | "loadPersistedToken" | "addAssetRef" | "removeAssetRef" | "fetchModels" | "setModel">>) => void;
     addMessage: (item: AgentChatItem) => void;
     addEventLog: (item: AgentEventLog) => void;
     clearEventLogs: () => void;
     loadPersistedToken: () => Promise<void>;
+    addAssetRef: (ref: AgentAssetRef) => void;
+    removeAssetRef: (assetId: string) => void;
+    fetchModels: () => Promise<void>;
+    setModel: (modelId: string) => void;
 };
 
 export const CANVAS_AGENT_PANEL_MOTION_MS = 500;
@@ -99,6 +109,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     silentConnect: false,
     prompt: "",
     attachments: [],
+    assetRefs: [],
+    modelId: "",
+    availableModels: [],
+    modelsLoading: false,
     sending: false,
     waiting: false,
     messages: [],
@@ -154,5 +168,36 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         if (typeof window === "undefined") return;
         // EdgeOne Makers 模式下 token 不再使用
         set({ token: "", tokenLoaded: true });
+    },
+    addAssetRef: (ref) => set((state) => {
+        // Deduplicate by assetId
+        if (state.assetRefs.some((r) => r.assetId === ref.assetId)) return {};
+        return { assetRefs: [...state.assetRefs, ref] };
+    }),
+    removeAssetRef: (assetId) => set((state) => ({
+        assetRefs: state.assetRefs.filter((r) => r.assetId !== assetId),
+    })),
+    fetchModels: async () => {
+        set({ modelsLoading: true });
+        try {
+            const res = await fetch("/api/v1/agent/models", { credentials: "include" });
+            if (res.ok) {
+                const data = await res.json();
+                set({
+                    availableModels: data.models || [],
+                    modelId: data.current || "",
+                });
+            }
+        } catch { /* silently fail, models dropdown will be hidden */ }
+        finally { set({ modelsLoading: false }); }
+    },
+    setModel: (modelId) => {
+        set({ modelId });
+        fetch(`/api/v1/agent/models`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ modelId }),
+        }).catch(() => {});
     },
 }));

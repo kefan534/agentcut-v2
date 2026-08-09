@@ -8,11 +8,17 @@ import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
 import CanvasProjectPage from "@/pages/canvas/project";
 import AdminPage from "@/pages/admin";
+import AdminSkillReview from "@/pages/admin-skill-review";
+import AdminModelPricing from "@/pages/admin-model-pricing";
+import AdminAuditLogs from "@/pages/admin-audit-logs";
+import MyRevenuePage from "@/pages/my-revenue";
 import ConfigPage from "@/pages/config";
 import HomePage from "@/pages/home";
+import HistoryPage from "@/pages/history";
 import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
+import SkillStorePage from "@/pages/skill-store";
 import VideoPage from "@/pages/video";
 import { useUserStore } from "@/stores/use-user-store";
 
@@ -39,12 +45,18 @@ export const router = createBrowserRouter([
             { path: "/", element: <HomePage /> },
             { path: "/image", element: <ImagePage /> },
             { path: "/video", element: <VideoPage /> },
+            { path: "/history", element: <RequireAuth><HistoryPage /></RequireAuth> },
             { path: "/assets", element: <RequireAuth><AssetsPage /></RequireAuth> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <RequireAuth><CanvasPage /></RequireAuth> },
             { path: "/canvas/:id", element: <RequireAuth><CanvasProjectPage /></RequireAuth> },
             { path: "/config", element: <ConfigPage /> },
+            { path: "/skill-store", element: <RequireAuth><SkillStorePage /></RequireAuth> },
+            { path: "/my-revenue", element: <RequireAuth><MyRevenuePage /></RequireAuth> },
             { path: "/admin", element: <RequireAuth adminOnly><AdminPage /></RequireAuth> },
+            { path: "/admin/skills", element: <RequireAuth adminOnly><AdminSkillReview /></RequireAuth> },
+            { path: "/admin/model-pricing", element: <RequireAuth adminOnly><AdminModelPricing /></RequireAuth> },
+            { path: "/admin/audit-logs", element: <RequireAuth adminOnly><AdminAuditLogs /></RequireAuth> },
         ],
     },
     { path: "/login", element: <LoginPage /> },

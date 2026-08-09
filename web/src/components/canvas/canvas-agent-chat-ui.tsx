@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
-import { ArrowUp, CheckCircle2, CircleAlert, ImagePlus, LoaderCircle, Square, UserRound, Wrench, X, XCircle } from "lucide-react";
+import { ArrowUp, CheckCircle2, CircleAlert, FileText, ImagePlus, LoaderCircle, Music, Paperclip, Square, UserRound, Video, Wrench, X, XCircle, Zap } from "lucide-react";
 import { Streamdown } from "streamdown";
 
 import { isPlainEnterKey } from "@/lib/keyboard-event";
@@ -164,6 +164,7 @@ export function AgentWorkingMessage({ theme }: { theme: (typeof canvasThemes)[ke
 export function AgentChatComposer({
     prompt,
     attachments = [],
+    assetRefs = [],
     disabled,
     sending,
     placeholder,
@@ -173,10 +174,13 @@ export function AgentChatComposer({
     onStop,
     onAddFiles,
     onRemoveAttachment,
+    onRemoveAssetRef,
     left,
+    right,
 }: {
     prompt: string;
     attachments?: CanvasAgentChatAttachment[];
+    assetRefs?: { assetId: string; name: string; kind: string; url: string; thumbnailUrl?: string }[];
     disabled?: boolean;
     sending?: boolean;
     placeholder: string;
@@ -186,7 +190,9 @@ export function AgentChatComposer({
     onStop?: () => void;
     onAddFiles?: (files: FileList | File[] | null) => void | Promise<void>;
     onRemoveAttachment?: (id: string) => void;
+    onRemoveAssetRef?: (assetId: string) => void;
     left?: ReactNode;
+    right?: ReactNode;
 }) {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const canSubmit = !disabled && !sending && Boolean(prompt.trim() || attachments.length);
@@ -201,6 +207,35 @@ export function AgentChatComposer({
                                 {onRemoveAttachment ? (
                                     <button type="button" className="absolute right-1 top-1 grid size-5 place-items-center rounded-full border opacity-0 shadow-sm transition group-hover:opacity-100" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke, color: theme.node.text }} onClick={() => onRemoveAttachment(item.id)} aria-label="移除图片">
                                         <X className="size-3" />
+                                    </button>
+                                ) : null}
+                            </div>
+                        ))}
+                    </div>
+                ) : null}
+                {assetRefs.length > 0 ? (
+                    <div className="thin-scrollbar mb-2 flex gap-2 overflow-x-auto pb-1">
+                        {assetRefs.map((ref) => (
+                            <div key={ref.assetId} className="group relative flex shrink-0 items-center gap-1.5 rounded-lg border px-2 py-1 text-xs" style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel, color: theme.node.text }} title={ref.name}>
+                                {ref.thumbnailUrl ? (
+                                    <img src={ref.thumbnailUrl} alt={ref.name} className="size-5 rounded object-cover" />
+                                ) : ref.kind === "skill" ? (
+                                    <Zap className="size-4 text-purple-500" />
+                                ) : ref.kind === "document" ? (
+                                    <FileText className="size-4" />
+                                ) : ref.kind === "image" ? (
+                                    <ImagePlus className="size-4" />
+                                ) : ref.kind === "video" ? (
+                                    <Video className="size-4" />
+                                ) : ref.kind === "audio" ? (
+                                    <Music className="size-4" />
+                                ) : (
+                                    <Paperclip className="size-4" />
+                                )}
+                                <span className="max-w-32 truncate">{ref.name}</span>
+                                {onRemoveAssetRef ? (
+                                    <button type="button" className="ml-0.5 grid size-4 place-items-center rounded-full border opacity-0 transition group-hover:opacity-100" style={{ borderColor: theme.node.stroke, color: theme.node.muted }} onClick={() => onRemoveAssetRef(ref.assetId)} aria-label="移除引用">
+                                        <X className="size-2.5" />
                                     </button>
                                 ) : null}
                             </div>
@@ -242,6 +277,7 @@ export function AgentChatComposer({
                         {left}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
+                        {right}
                         {sending && onStop ? (
                             <Button danger shape="circle" className="!h-10 !w-10 !min-w-10" icon={<Square className="size-4" />} onClick={() => void onStop()} aria-label="停止" />
                         ) : (

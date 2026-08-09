@@ -1,4 +1,4 @@
-import { Copy, Download, PencilLine, Search, Trash2, Upload } from "lucide-react";
+import { Copy, Download, PencilLine, Search, Trash2, Upload, AtSign } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination, Select, Space, Tag, Typography } from "antd";
 import { saveAs } from "file-saver";
@@ -8,6 +8,7 @@ import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
 import { useAssetStore, type Asset, type AssetKind, type ImageAsset } from "@/stores/use-asset-store";
+import { useAgentStore } from "@/stores/use-agent-store";
 import { exportAssets, readAssetPackage } from "./asset-transfer";
 
 type AssetFormValues = {
@@ -465,6 +466,22 @@ function AssetCard({ asset, onOpen, onEdit, onCopy, onDownload, onDelete }: { as
                 ) : null}
                 <Button size="small" danger icon={<Trash2 className="size-3.5" />} onClick={onDelete}>
                     删除
+                </Button>
+                <Button
+                    size="small"
+                    icon={<AtSign className="size-3.5" />}
+                    onClick={() => {
+                        const url = asset.coverUrl || (asset.kind === "image" ? asset.data?.dataUrl : "") || "";
+                        useAgentStore.getState().addAssetRef({
+                            assetId: asset.id,
+                            name: asset.title,
+                            kind: asset.kind,
+                            url,
+                            thumbnailUrl: url,
+                        });
+                    }}
+                >
+                    引用
                 </Button>
             </div>
         </Card>

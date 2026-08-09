@@ -1,13 +1,14 @@
-import { BookOpen, ClipboardPaste, FolderPlus, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
+import { BookOpen, ClipboardPaste, FolderPlus, History as HistoryIcon, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { App, Button, Drawer, Input } from "antd";
+import { Link } from "react-router-dom";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { GenerationFeed } from "@/components/generation-chat";
-import { GenerationHistorySidebar } from "@/components/generation-history-sidebar";
+import { PageContainer } from "@/components/layout/page-container";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
@@ -72,6 +73,17 @@ export default function ImagePage() {
         const timer = window.setInterval(() => setElapsedMs(performance.now() - startedAt), 1000);
         return () => window.clearInterval(timer);
     }, [running, startedAt]);
+
+    // 从 /history 页面跳转过来时，载入复用的提示词
+    useEffect(() => {
+        const reusePrompt = sessionStorage.getItem("agentcut:reuse-prompt");
+        const reuseSource = sessionStorage.getItem("agentcut:reuse-source");
+        if (reusePrompt && reuseSource === "image") {
+            setPrompt(reusePrompt);
+            sessionStorage.removeItem("agentcut:reuse-prompt");
+            sessionStorage.removeItem("agentcut:reuse-source");
+        }
+    }, []);
 
     const addReferences = async (files?: FileList | null) => {
         const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
@@ -275,125 +287,126 @@ export default function ImagePage() {
 
     return (
         <div className="flex h-full flex-col overflow-hidden bg-stone-50 text-stone-900 dark:bg-stone-950 dark:text-stone-100">
-            <main className="grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[240px_360px_minmax(0,1fr)] xl:grid-cols-[260px_380px_minmax(0,1fr)]">
-                <aside className="min-h-0 overflow-hidden rounded-lg border border-stone-200 bg-card shadow-sm dark:border-stone-800">
-                    <GenerationHistorySidebar
-                        sessions={sessions}
-                        loading={historyLoading}
-                        mediaType="image"
-                        selectedId={selectedSessionId}
-                        onSelect={selectSession}
-                    />
-                </aside>
-                <aside className="thin-scrollbar flex min-h-0 flex-col overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800">
-                    <div className="flex items-start justify-between gap-3">
+            <PageContainer>
+                <div className="flex h-full min-h-0 flex-col gap-4 py-4">
+                    <header className="flex items-center justify-between gap-3">
                         <div className="min-w-0">
                             <h1 className="text-xl font-semibold text-stone-950 dark:text-stone-100">生图工作台</h1>
+                            <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">描述画面主体、风格、构图、光线和用途</p>
                         </div>
-                        <div className="flex shrink-0 gap-2 lg:hidden">
-                            <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
-                                参数
-                            </Button>
-                        </div>
-                    </div>
-
-                    <div className="mt-4 space-y-4">
-                        <div>
-                            <div className="mb-2 flex items-center justify-between gap-3">
-                                <span className="text-sm font-semibold">提示词</span>
-                                <div className="flex gap-2">
-                                    <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
-                                        提示词库
-                                    </Button>
-                                    <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
-                                        我的资产
-                                    </Button>
-                                </div>
+                        <div className="flex shrink-0 gap-2">
+                            <Link to="/history" aria-label="查看历史">
+                                <Button icon={<HistoryIcon className="size-4" />}>历史</Button>
+                            </Link>
+                            <div className="lg:hidden">
+                                <Button icon={<SlidersHorizontal className="size-4" />} onClick={() => setSettingsOpen(true)}>
+                                    参数
+                                </Button>
                             </div>
-                            <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} maxLength={20000} showCount placeholder="描述画面主体、风格、构图、光线和用途" />
                         </div>
+                    </header>
 
-                        <div className="min-w-0">
-                            <div className="mb-2 flex items-center justify-between gap-3">
-                                <span className="text-sm font-semibold">参考图</span>
-                                <div className="flex gap-2">
-                                    <Button size="small" icon={<ClipboardPaste className="size-3.5" />} onClick={() => void addReferencesFromClipboard()}>
-                                        剪切板
-                                    </Button>
-                                    <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
-                                        上传
-                                    </Button>
-                                </div>
-                            </div>
-                            <div
-                                className={`hover-scrollbar hover-scrollbar-hint relative flex min-h-20 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${isReferenceDragActive ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
-                                onDragEnter={(event) => {
-                                    event.preventDefault();
-                                    dragDepthRef.current += 1;
-                                    if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true);
-                                }}
-                                onDragOver={(event) => {
-                                    event.preventDefault();
-                                    event.dataTransfer.dropEffect = "copy";
-                                }}
-                                onDragLeave={(event) => {
-                                    event.preventDefault();
-                                    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-                                    if (!dragDepthRef.current) setIsReferenceDragActive(false);
-                                }}
-                                onDrop={(event) => {
-                                    event.preventDefault();
-                                    dragDepthRef.current = 0;
-                                    setIsReferenceDragActive(false);
-                                    void addReferences(event.dataTransfer.files);
-                                }}
-                                onWheel={(event) => {
-                                    if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
-                                    event.preventDefault();
-                                    event.currentTarget.scrollLeft += event.deltaY;
-                                }}
-                            >
-                                {references.map((item, index) => (
-                                    <div key={item.id} className="group relative size-16 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-                                        <img src={item.dataUrl} alt={item.name} className="size-full object-cover" />
-                                        <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
-                                        <button
-                                            type="button"
-                                            className="absolute right-1 top-1 hidden size-5 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
-                                            onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))}
-                                            aria-label="移除参考图"
-                                        >
-                                            <Trash2 className="size-3" />
-                                        </button>
+                    <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+                        <aside className="thin-scrollbar flex min-h-0 flex-col overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800">
+                            <div className="space-y-4">
+                                <div>
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <span className="text-sm font-semibold">提示词</span>
+                                        <div className="flex gap-2">
+                                            <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
+                                                提示词库
+                                            </Button>
+                                            <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
+                                                我的资产
+                                            </Button>
+                                        </div>
                                     </div>
-                                ))}
-                                {!references.length ? <div className="flex min-w-full items-center justify-center text-xs text-stone-500">暂无参考图，可将图片拖到这里</div> : null}
+                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} maxLength={20000} showCount placeholder="描述画面主体、风格、构图、光线和用途" />
+                                </div>
+
+                                <div className="min-w-0">
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <span className="text-sm font-semibold">参考图</span>
+                                        <div className="flex gap-2">
+                                            <Button size="small" icon={<ClipboardPaste className="size-3.5" />} onClick={() => void addReferencesFromClipboard()}>
+                                                剪切板
+                                            </Button>
+                                            <Button size="small" icon={<Upload className="size-3.5" />} onClick={() => fileInputRef.current?.click()}>
+                                                上传
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <div
+                                        className={`hover-scrollbar hover-scrollbar-hint relative flex min-h-20 w-full min-w-0 max-w-full gap-2 overflow-x-scroll overflow-y-hidden rounded-lg border border-dashed p-2 pb-3 overscroll-x-contain transition-colors ${isReferenceDragActive ? "border-stone-900 bg-stone-100/80 dark:border-stone-100 dark:bg-stone-900/80" : "border-stone-300 dark:border-stone-700"}`}
+                                        onDragEnter={(event) => {
+                                            event.preventDefault();
+                                            dragDepthRef.current += 1;
+                                            if (event.dataTransfer.types.includes("Files")) setIsReferenceDragActive(true);
+                                        }}
+                                        onDragOver={(event) => {
+                                            event.preventDefault();
+                                            event.dataTransfer.dropEffect = "copy";
+                                        }}
+                                        onDragLeave={(event) => {
+                                            event.preventDefault();
+                                            dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+                                            if (!dragDepthRef.current) setIsReferenceDragActive(false);
+                                        }}
+                                        onDrop={(event) => {
+                                            event.preventDefault();
+                                            dragDepthRef.current = 0;
+                                            setIsReferenceDragActive(false);
+                                            void addReferences(event.dataTransfer.files);
+                                        }}
+                                        onWheel={(event) => {
+                                            if (event.currentTarget.scrollWidth <= event.currentTarget.clientWidth) return;
+                                            event.preventDefault();
+                                            event.currentTarget.scrollLeft += event.deltaY;
+                                        }}
+                                    >
+                                        {references.map((item, index) => (
+                                            <div key={item.id} className="group relative size-16 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
+                                                <img src={item.dataUrl} alt={item.name} className="size-full object-cover" />
+                                                <span className="absolute left-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[10px] font-medium text-white">{imageReferenceLabel(index)}</span>
+                                                <button
+                                                    type="button"
+                                                    className="absolute right-1 top-1 hidden size-5 items-center justify-center rounded bg-black/60 text-white group-hover:flex"
+                                                    onClick={() => setReferences((value) => value.filter((ref) => ref.id !== item.id))}
+                                                    aria-label="移除参考图"
+                                                >
+                                                    <Trash2 className="size-3" />
+                                                </button>
+                                            </div>
+                                        ))}
+                                        {!references.length ? <div className="flex min-w-full items-center justify-center text-xs text-stone-500">暂无参考图，可将图片拖到这里</div> : null}
+                                    </div>
+                                </div>
+
+                                <div className="hidden sm:block">
+                                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                                </div>
                             </div>
-                        </div>
 
-                        <div className="hidden sm:block">
-                            <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
-                        </div>
-                    </div>
+                            <div className="mt-auto pt-4">
+                                <div className="mb-2 flex items-center justify-between text-xs text-stone-500">
+                                    <span>{modelOptionLabel(effectiveConfig, model)}</span>
+                                    <span>{formatDuration(elapsedMs)}</span>
+                                </div>
+                                <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
+                                    开始生成
+                                </Button>
+                                <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
+                                    新建会话
+                                </Button>
+                            </div>
+                        </aside>
 
-                    <div className="mt-auto pt-4">
-                        <div className="mb-2 flex items-center justify-between text-xs text-stone-500">
-                            <span>{modelOptionLabel(effectiveConfig, model)}</span>
-                            <span>{formatDuration(elapsedMs)}</span>
-                        </div>
-                        <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                            开始生成
-                        </Button>
-                        <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
-                            新建会话
-                        </Button>
-                    </div>
-                </aside>
-
-                <section className="thin-scrollbar overflow-hidden rounded-lg border border-stone-200 bg-card shadow-sm dark:border-stone-800">
-                    <GenerationFeed sessions={sessions} loading={historyLoading} mediaType="image" onRetry={handleRetry} onDelete={deleteSession} onRemoveResult={removeResultUrl} onReuse={handleReuse} />
-                </section>
-            </main>
+                        <section className="thin-scrollbar overflow-hidden rounded-lg border border-stone-200 bg-card shadow-sm dark:border-stone-800">
+                            <GenerationFeed sessions={sessions} loading={historyLoading} mediaType="image" onRetry={handleRetry} onDelete={deleteSession} onRemoveResult={removeResultUrl} onReuse={handleReuse} />
+                        </section>
+                    </main>
+                </div>
+            </PageContainer>
             <input
                 ref={fileInputRef}
                 type="file"

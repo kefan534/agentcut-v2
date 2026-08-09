@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app.models.model import ApiSource, VariableMapping
 from app.models.user import User
 from app.models.log import CallLog
-from app.services import cos_service, upload_service
+from app.services.cos_service import is_configured as cos_is_configured, upload_bytes as cos_upload_bytes, upload_file as cos_upload_file, delete_file as cos_delete_file, resolve_asset_url
+from app.services.upload_service import sanitize_filename as _sanitize_filename, validate_magic_bytes as _validate_magic_bytes
 from app.services.minimax_h3_service import generate_video as h3_generate_video
 from app.services.comfyui_service import comfyui_generate, comfyui_upload_image, TEXT_TO_IMAGE_WORKFLOW
 from app.services.comfyui_workflows import MINIMAX_H3_REF2VIDEO_WORKFLOW

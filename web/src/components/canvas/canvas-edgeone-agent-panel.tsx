@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { App, Button, Input, Segmented, Tooltip } from "antd";
+import { App, Button, Input, Segmented, Select, Tag, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { ChevronDown, Copy, Download, ExternalLink, Film, FolderOpen, History, ImageIcon, LoaderCircle, MessageSquare, Music, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, Database, Download, ExternalLink, FileText, Film, FolderOpen, History, ImageIcon, LoaderCircle, MessageSquare, Music, AtSign, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2, Upload, Zap } from "lucide-react";
 
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageMetadata } from "@/lib/canvas/canvas-node-factory";
@@ -10,7 +10,7 @@ import { fitNodeSize } from "@/lib/canvas/canvas-node-size";
 import { readImageMeta } from "@/lib/image-utils";
 import { randomId } from "@/lib/utils";
 import { uploadImage } from "@/services/image-storage";
-import { getMemoryAccessToken } from "@/services/api/backend";
+import { BACKEND_BASE_URL, getAssetUrl, getMemoryAccessToken } from "@/services/api/backend";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { useShallow } from "zustand/react/shallow";
@@ -62,7 +62,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     // 注意：canvasContext 不在此订阅内 —— 它在拖拽/resize 时会被 project 每帧写入，
     // 但面板只在 ref 同步与防抖 postState 中用到它、渲染层从不读它。若把它放进订阅，
     // 面板会随画布每帧重渲染（性能问题，也是 #185 崩溃的放大器）。改为下方 subscribe 命令式监听。
-    const { width, url, token, connected, enabled, prompt, attachments, sending, waiting, messages, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, activity, connectError, pendingTool } = useAgentStore(
+    const { width, url, token, connected, enabled, prompt, attachments, assetRefs, modelId, availableModels, modelsLoading, sending, waiting, messages, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, activity, connectError, pendingTool } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -71,6 +71,10 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
             enabled: state.enabled,
             prompt: state.prompt,
             attachments: state.attachments,
+            assetRefs: state.assetRefs,
+            modelId: state.modelId,
+            availableModels: state.availableModels,
+            modelsLoading: state.modelsLoading,
             sending: state.sending,
             waiting: state.waiting,
             messages: state.messages,
@@ -90,6 +94,10 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     const pushMessage = useAgentStore((state) => state.addMessage);
     const pushEventLog = useAgentStore((state) => state.addEventLog);
     const clearEventLogs = useAgentStore((state) => state.clearEventLogs);
+    const addAssetRef = useAgentStore((state) => state.addAssetRef);
+    const removeAssetRef = useAgentStore((state) => state.removeAssetRef);
+    const fetchModels = useAgentStore((state) => state.fetchModels);
+    const setModel = useAgentStore((state) => state.setModel);
     const listRef = useRef<HTMLDivElement>(null);
     const followMessagesRef = useRef(true);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -328,9 +336,15 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
             document.removeEventListener("visibilitychange", activateVisible);
         };
     }, [connected, endpoint, token]);
+    // P0: fetch available models when connected
+    useEffect(() => {
+        if (connected) void fetchModels();
+    }, [connected, fetchModels]);
     const sendPrompt = async () => {
         const text = prompt.trim();
         const files = attachments;
+        const refs = useAgentStore.getState().assetRefs;
+        const currentModel = useAgentStore.getState().modelId;
         const requestPrompt = promptWithAttachments(text, files);
         if (!connected || !requestPrompt || sending || waiting) return;
         if (attachmentPayloadBytes(files) > MAX_ATTACHMENT_PAYLOAD_BYTES) {
@@ -340,7 +354,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         setAgentState({ activity: "发送中", sending: true });
         const messageId = createId();
         addMessage({ id: messageId, role: "user", text: text || "发送了图片", attachments: files });
-        addEventLog("用户发送", { text, attachments: files.map(({ name, type, size }) => ({ name, type, size })) });
+        addEventLog("用户发送", { text, attachments: files.map(({ name, type, size }) => ({ name, type, size })), assetRefs: refs.map(({ assetId, name }) => ({ assetId, name })) });
         try {
             const data = await fetchAgentJson<{ threadId?: string }>(endpoint, token, "/turn", {
                 method: "POST",
@@ -352,6 +366,8 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                     clientId: clientIdRef.current,
                     threadId: useAgentStore.getState().activeThreadId || undefined,
                     attachments: files.map(({ id, name, type, size, width, height, dataUrl }) => ({ id, name, type, size, width, height, dataUrl })),
+                    model: currentModel || undefined,
+                    assetIds: refs.map((r) => r.assetId),
                 }),
             });
             if (data.threadId) setAgentState({ activeThreadId: data.threadId });
@@ -360,7 +376,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                 URL.revokeObjectURL(item.url);
                 attachmentUrlsRef.current.delete(item.url);
             });
-            setAgentState({ prompt: "", attachments: [] });
+            setAgentState({ prompt: "", attachments: [], assetRefs: [] });
         } catch (error) {
             const text = error instanceof Error ? error.message : "发送失败";
             const busy = text.includes("Codex 正在运行");
@@ -421,6 +437,44 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
         setAgentState({ attachments: attachments.filter((item) => item.id !== id) });
     };
 
+    // P1: asset_upload 工具 — 弹前端文件选择器 → 上传 → 返回 assetId
+    const handleAssetUploadFromAgent = async (requestId: string) => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "image/*,video/*,audio/*,.pdf,.docx,.xlsx,.xls,.txt,.md,.csv";
+        input.style.display = "none";
+        document.body.appendChild(input);
+        return new Promise<{ ok: boolean; assetId?: string; error?: string }>((resolve) => {
+            input.onchange = async () => {
+                document.body.removeChild(input);
+                const file = input.files?.[0];
+                if (!file) { resolve({ ok: false, error: "no file selected" }); return; }
+                try {
+                    // 简易上传：前端直接 POST 到 /api/v1/assets
+                    const fd = new FormData();
+                    fd.append("file", file);
+                    const res = await fetch("/api/v1/assets/upload", { method: "POST", body: fd, credentials: "include" });
+                    const data = await res.json();
+                    if (data.ok) {
+                        addAssetRef({
+                            assetId: data.assetId,
+                            name: data.name,
+                            kind: data.kind || "document",
+                            url: data.url,
+                            thumbnailUrl: data.thumbnailUrl,
+                        });
+                        resolve({ ok: true, assetId: data.assetId });
+                    } else {
+                        resolve({ ok: false, error: data.detail || "upload failed" });
+                    }
+                } catch (err) {
+                    resolve({ ok: false, error: String(err) });
+                }
+            };
+            input.click();
+        });
+    };
+
     const handleToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
         if (confirmToolsRef.current && isCanvasWriteTool(payload.name)) {
             if (pendingToolRef.current) {
@@ -436,6 +490,13 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     };
 
     const runToolCall = async (endpoint: string, token: string, payload: AgentPendingToolCall) => {
+        // P1: asset_upload — 弹前端文件选择器 + 上传 + 返回 assetId
+        if (payload.name === "asset_upload") {
+            addEventLog("asset_upload", payload, payload);
+            const result = await handleAssetUploadFromAgent(payload.requestId);
+            await postToolResult(endpoint, token, clientIdRef.current, { requestId: payload.requestId, result });
+            return;
+        }
         if (isSiteTool(payload.name)) {
             try {
                 addEventLog(toolName(payload.name), payload, payload);
@@ -742,6 +803,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                     <AgentChatComposer
                         prompt={prompt}
                         attachments={attachments.map(agentAttachmentToChatAttachment)}
+                        assetRefs={assetRefs.map((r) => ({ assetId: r.assetId, name: r.name, kind: r.kind, url: r.url, thumbnailUrl: r.thumbnailUrl }))}
                         disabled={!connected}
                         sending={sending || waiting}
                         placeholder="询问 Agent，或让它操作网站/画布"
@@ -751,12 +813,12 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                         onStop={stopTurn}
                         onAddFiles={addAttachments}
                         onRemoveAttachment={removeAttachment}
+                        onRemoveAssetRef={(assetId) => removeAssetRef(assetId)}
                         left={
-                            attachments.length ? (
-                                <span className="text-[11px]" style={{ color: theme.node.muted }}>
-                                    {formatBytes(attachmentPayloadBytes(attachments))} / 30MB
-                                </span>
-                            ) : null
+                            <AgentChatPlusMenu onAssetRef={addAssetRef} onAddFiles={addAttachments} />
+                        }
+                        right={
+                            <AgentChatModelSelector value={modelId} models={availableModels} loading={modelsLoading} onChange={setModel} />
                         }
                     />
                 </>
@@ -767,6 +829,183 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     if (headless) return null;
     return embedded ? content : null;
 }
+
+/* ── P0: Agent 输入区「+」菜单 ──────────────────────────────── */
+
+type AssetRefInput = { assetId: string; name: string; kind: string; url: string; thumbnailUrl?: string };
+type MenuPos = { top: number; left: number; right?: number };
+
+function AgentChatPlusMenu({ onAssetRef, onAddFiles }: { onAssetRef: (ref: AssetRefInput) => void; onAddFiles?: (files: File[]) => void }) {
+    const [open, setOpen] = useState(false);
+    const fileRef = useRef<HTMLInputElement>(null);
+    const nav = useNavigate();
+    const btnRef = useRef<HTMLButtonElement>(null);
+    const [pos, setPos] = useState<MenuPos | null>(null);
+    const [mounted, setMounted] = useState(false);
+    const [pickingAsset, setPickingAsset] = useState(false);
+    const [assets, setAssets] = useState<Array<{ id: string; name: string; asset_type: string; url?: string; thumbnail_url?: string }>>([]);
+    const [assetLoading, setAssetLoading] = useState(false);
+
+    useEffect(() => { setMounted(true); }, []);
+
+    const openMenu = () => {
+        const el = btnRef.current?.querySelector<HTMLButtonElement>("button") ?? btnRef.current;
+        const r = el?.getBoundingClientRect();
+        if (r) {
+            const menuWidth = 240;
+            const menuHeight = 156;  // 估算 3 个选项 + padding
+            const left = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, r.left));
+            // 向上弹出：在按钮上方
+            const top = r.top - menuHeight - 6;
+            setPos({ top: Math.max(8, top), left });
+        }
+        setOpen(true);
+    };
+
+    const pickAsset = async () => {
+        setOpen(false);
+        setPickingAsset(true);
+        setAssetLoading(true);
+        try {
+            const res = await fetch("/api/v1/assets?limit=50", { credentials: "include" });
+            const data = await res.json();
+            setAssets(Array.isArray(data) ? data : (data.items || []));
+        } catch { /* ignore */ }
+        finally { setAssetLoading(false); }
+    };
+
+    const addAsset = (a: { id: string; name: string; asset_type: string; url?: string; thumbnail_url?: string }) => {
+        const kind = a.asset_type === "image" ? "image"
+            : a.asset_type === "video" ? "video"
+            : a.asset_type === "audio" ? "audio"
+            : "document";
+        onAssetRef({
+            assetId: a.id,
+            name: a.name,
+            kind,
+            url: a.url || "",
+            thumbnailUrl: a.thumbnail_url || a.url,
+        });
+        setPickingAsset(false);
+    };
+
+    const handleUpload = (files: FileList | null) => {
+        if (!files?.length) return;
+        setOpen(false);
+        if (onAddFiles) {
+            // 走主上传链路，上传成功后由父组件加到 attachments/assetRefs
+            onAddFiles(Array.from(files));
+        } else {
+            // fallback：直接跳转资产页让用户上传
+            nav("/assets");
+        }
+    };
+
+    if (!mounted) return null;
+
+    const menu = pos && open ? (
+        <div
+            className="fixed inset-0 z-[2000] bg-transparent"
+            onClick={() => setOpen(false)}
+        >
+            <div
+                className="absolute min-w-60 rounded-xl border p-1 shadow-2xl"
+                style={{
+                    top: pos.top,
+                    left: pos.left,
+                    backgroundColor: "rgba(40, 40, 45, 0.96)",
+                    borderColor: "rgba(255, 255, 255, 0.10)",
+                    color: "#e5e7eb",
+                }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <button type="button" className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-white/10" onClick={() => fileRef.current?.click()}>
+                    <Upload className="size-5 text-purple-400" />
+                    <div><div className="font-medium">上传</div><div className="text-xs text-gray-400">图片、音频、视频、文档</div></div>
+                </button>
+                <input ref={fileRef} hidden type="file" accept="image/*,video/*,audio/*,.pdf,.docx,.xlsx,.xls,.txt,.md,.csv" multiple onChange={(e) => handleUpload(e.target.files)} />
+                <button type="button" className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-white/10" onClick={pickAsset}>
+                    <Database className="size-5 text-purple-400" />
+                    <div><div className="font-medium">从素材库引用</div><div className="text-xs text-gray-400">已有素材 @ 引用</div></div>
+                </button>
+                <button type="button" className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm hover:bg-white/10" onClick={() => { setOpen(false); nav("/skill-store"); }}>
+                    <Zap className="size-5 text-purple-400" />
+                    <div><div className="font-medium">技能</div><div className="text-xs text-gray-400">Skill 商店</div></div>
+                </button>
+            </div>
+        </div>
+    ) : null;
+
+    const assetPicker = pickingAsset ? (
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40" onClick={() => setPickingAsset(false)}>
+            <div className="max-h-[70vh] w-[520px] max-w-[90vw] overflow-y-auto rounded-xl bg-white p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                <div className="mb-3 flex items-center justify-between">
+                    <div className="text-base font-semibold">选择素材引用</div>
+                    <button onClick={() => setPickingAsset(false)} className="text-gray-400 hover:text-gray-700">✕</button>
+                </div>
+                {assetLoading ? (
+                    <div className="py-8 text-center text-sm text-gray-400">加载中...</div>
+                ) : assets.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-gray-400">
+                        <div>暂无素材</div>
+                        <Button size="small" className="mt-2" onClick={() => { setPickingAsset(false); nav("/assets"); }}>去上传</Button>
+                    </div>
+                ) : (
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                        {assets.map((a) => (
+                            <button key={a.id} onClick={() => addAsset(a)} className="flex flex-col items-start gap-1 rounded-lg border p-2 text-left text-xs hover:border-purple-400 hover:bg-purple-50">
+                                {a.thumbnail_url || a.url ? (
+                                    <img src={a.thumbnail_url || a.url} alt={a.name} className="size-12 rounded object-cover" />
+                                ) : (
+                                    <div className="grid size-12 place-items-center rounded bg-gray-100 text-gray-400">
+                                        <FileText className="size-5" />
+                                    </div>
+                                )}
+                                <div className="line-clamp-2 break-all">{a.name}</div>
+                                <div className="text-[10px] text-gray-400">{a.asset_type}</div>
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    ) : null;
+
+    return (
+        <>
+            <Tooltip title="添加素材 / 知识库 / 技能">
+                <Button ref={btnRef} type="text" shape="circle" className="!h-9 !w-9 !min-w-9" icon={<Plus className="size-4" />} onClick={openMenu} />
+            </Tooltip>
+            {menu}
+            {assetPicker}
+        </>
+    );
+}
+
+/* ── P0: 模型选择器（持久化到 users.agent_model） ─────────── */
+
+function AgentChatModelSelector({ value, models, loading, onChange }: { value: string; models: { id: string; name: string; kind?: string; costPerTurn?: number }[]; loading: boolean; onChange: (id: string) => void }) {
+    if (loading) return <Tag color="purple" className="!m-0 shrink-0">加载中…</Tag>;
+    if (!models.length) {
+        return <Tag color="purple" className="!m-0 shrink-0" icon={<Zap className="size-3" />}>Makers Agent</Tag>;
+    }
+    const current = models.find((m) => m.id === value);
+    return (
+        <Select
+            size="small"
+            value={value || current?.id || ""}
+            onChange={(v) => onChange(v as string)}
+            options={models.map((m) => ({
+                value: m.id,
+                label: `${m.name}${m.costPerTurn != null && m.costPerTurn > 0 ? ` (${m.costPerTurn} 积分)` : ""}`,
+            }))}
+            style={{ minWidth: 150, maxWidth: 220 }}
+            placeholder="选择模型"
+        />
+    );
+}
+
+/* ── Agent 输出 / 产物页面 ─────────────────────────────────── */
 
 function AgentOutputsView({
     outputs,
@@ -783,6 +1022,13 @@ function AgentOutputsView({
     const isImage = (url: string, category: string) => category === "image" || /\.(jpe?g|png|webp|gif|bmp)(\?|$)/i.test(url);
     const isVideo = (url: string, category: string) => category === "video" || /\.(mp4|mov|webm|mkv)(\?|$)/i.test(url);
     const isAudio = (url: string, category: string) => category === "audio" || /\.(mp3|wav|m4a|aac|ogg)(\?|$)/i.test(url);
+
+    const resolveOutputUrl = (url: string): string => {
+        if (!url) return "";
+        if (/^https?:\/\//i.test(url)) return url;
+        if (url.startsWith("/api/v1/upload/")) return `${BACKEND_BASE_URL}${url}`;
+        return getAssetUrl(url);
+    };
 
     const handleDownload = async (url: string, category: string) => {
         try {
@@ -817,48 +1063,52 @@ function AgentOutputsView({
                 </div>
             ) : (
                 <div className="grid grid-cols-2 gap-3">
-                    {outputs.map((item) => (
-                        <div
-                            key={item.id}
-                            className="group relative overflow-hidden rounded-lg border"
-                            style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }}
-                        >
-                            {isImage(item.url, item.modal_category) ? (
-                                <img
-                                    src={item.url}
-                                    alt={item.variable_name}
-                                    className="aspect-video w-full cursor-zoom-in object-cover"
-                                    onClick={() => setPreviewUrl(item.url)}
-                                />
-                            ) : isVideo(item.url, item.modal_category) ? (
-                                <video
-                                    src={item.url}
-                                    className="aspect-video w-full cursor-pointer object-cover"
-                                    controls
-                                    preload="metadata"
-                                    onClick={() => setPreviewUrl(item.url)}
-                                />
-                            ) : isAudio(item.url, item.modal_category) ? (
-                                <div className="flex aspect-video w-full items-center justify-center">
-                                    <Music className="size-10 opacity-50" />
+                    {outputs.map((item) => {
+                        const displayUrl = resolveOutputUrl(item.url);
+                        return (
+                            <div
+                                key={item.id}
+                                className="group relative overflow-hidden rounded-lg border"
+                                style={{ borderColor: theme.node.stroke, background: theme.toolbar.panel }}
+                            >
+                                {isImage(item.url, item.modal_category) ? (
+                                    <img
+                                        src={displayUrl}
+                                        alt={item.variable_name}
+                                        className="aspect-video w-full cursor-zoom-in object-cover"
+                                        onClick={() => setPreviewUrl(displayUrl)}
+                                    />
+                                ) : isVideo(item.url, item.modal_category) ? (
+                                    <video
+                                        src={displayUrl}
+                                        className="aspect-video w-full cursor-pointer object-cover"
+                                        controls
+                                        preload="metadata"
+                                        onClick={() => setPreviewUrl(displayUrl)}
+                                    />
+                                ) : isAudio(item.url, item.modal_category) ? (
+                                    <div className="flex aspect-video w-full items-center justify-center">
+                                        <Music className="size-10 opacity-50" />
+                                    </div>
+                                ) : (
+                                    <div className="flex aspect-video w-full items-center justify-center">
+                                        <Film className="size-10 opacity-50" />
+                                    </div>
+                                )}
+                                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/60 px-2 py-1.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
+                                    <span className="truncate">{item.variable_name}</span>
+                                    <div className="flex items-center gap-1">
+                                        <Button size="small" type="text" icon={<Download className="size-3.5 text-white" />} onClick={() => void handleDownload(displayUrl, item.modal_category)} />
+                                        <Button size="small" type="text" icon={<ExternalLink className="size-3.5 text-white" />} onClick={() => window.open(displayUrl, "_blank")} />
+                                        <Button size="small" type="text" icon={<AtSign className="size-3.5 text-white" />} onClick={() => useAgentStore.getState().addAssetRef({ assetId: item.id, name: item.variable_name, kind: item.modal_category, url: displayUrl })} />
+                                    </div>
                                 </div>
-                            ) : (
-                                <div className="flex aspect-video w-full items-center justify-center">
-                                    <Film className="size-10 opacity-50" />
-                                </div>
-                            )}
-                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/60 px-2 py-1.5 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
-                                <span className="truncate">{item.variable_name}</span>
-                                <div className="flex items-center gap-1">
-                                    <Button size="small" type="text" icon={<Download className="size-3.5 text-white" />} onClick={() => void handleDownload(item.url, item.modal_category)} />
-                                    <Button size="small" type="text" icon={<ExternalLink className="size-3.5 text-white" />} onClick={() => window.open(item.url, "_blank")} />
-                                </div>
+                                {isAudio(item.url, item.modal_category) && (
+                                    <audio src={displayUrl} controls className="w-full px-2 pb-2 pt-1" />
+                                )}
                             </div>
-                            {isAudio(item.url, item.modal_category) && (
-                                <audio src={item.url} controls className="w-full px-2 pb-2 pt-1" />
-                            )}
-                        </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
             {previewUrl && (

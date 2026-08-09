@@ -10,6 +10,9 @@ from app.api.upload.router import router as upload_router
 from app.api.projects.router import router as projects_router
 from app.api.admin.router import router as admin_router
 from app.api.agent.router import router as agent_router
+from app.api.skills.router import router as skills_router, admin_router as admin_skills_router
+from app.api.admin.model_pricing import router as admin_model_pricing_router
+from app.api.admin.audit_logs import router as audit_logs_router
 
 # Optional modules (may not exist in all deployments)
 try:
@@ -46,6 +49,10 @@ if samples_router:
     app.include_router(samples_router, prefix=settings.API_V1_PREFIX)
 app.include_router(admin_router, prefix=settings.API_V1_PREFIX)
 app.include_router(agent_router, prefix=settings.API_V1_PREFIX)
+app.include_router(skills_router, prefix=settings.API_V1_PREFIX)
+app.include_router(admin_skills_router, prefix=settings.API_V1_PREFIX)
+app.include_router(admin_model_pricing_router, prefix=settings.API_V1_PREFIX)
+app.include_router(audit_logs_router, prefix=settings.API_V1_PREFIX)
 
 
 # Ensure upload directory exists (no public static mount; files served via /api/v1/upload)

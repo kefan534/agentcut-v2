@@ -17,6 +17,9 @@ class User(Base):
     level = Column(String(16), nullable=False, default="free")  # free, paid, vip
     credits = Column(Integer, nullable=False, default=0)
     status = Column(String(16), nullable=False, default="active")  # active, banned
+    # P0: 用户级 Agent 模型选择持久化
+    agent_model = Column(String(128), nullable=True)  # 用户选择的 Agent 模型 id
+    agent_model_updated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

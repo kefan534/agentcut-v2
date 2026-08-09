@@ -3,12 +3,15 @@ import time
 import json
 import base64
 import asyncio
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, List
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Request, File, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse, Response
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.db.session import get_db
 from app.core.deps import get_current_user, get_current_user_optional
@@ -372,9 +375,10 @@ async def _save_generated_media(
     current_user: User,
     modal_category: str,
 ) -> List[str]:
-    """Persist generated media (image base64 or external URL) to disk/URL list.
-    Returns public URLs that can be displayed by the frontend."""
+    """Persist generated media (image base64 or external URL) to COS.
+    Returns public COS URLs that can be displayed by the frontend."""
     from app.core.config import settings
+    from app.services import cos_service
     urls: List[str] = []
     if not isinstance(result, dict):
         return urls
@@ -382,8 +386,10 @@ async def _save_generated_media(
     data_arr = result.get("data")
     items = data_arr if isinstance(data_arr, list) else [result]
 
+    cos_ready = cos_service.is_configured()
     user_dir = Path(settings.UPLOAD_DIR) / str(current_user.id)
-    user_dir.mkdir(parents=True, exist_ok=True)
+    if not cos_ready:
+        user_dir.mkdir(parents=True, exist_ok=True)
 
     for item in items:
         if not isinstance(item, dict):
@@ -394,34 +400,48 @@ async def _save_generated_media(
                 raw = base64.b64decode(b64)
             except Exception:
                 continue
-            # Best-effort extension from mime type if present
             mime = item.get("mime_type") or item.get("mimeType") or ""
             ext = ".png"
+            content_type = "image/png"
             if "jpeg" in mime or "jpg" in mime:
-                ext = ".jpg"
+                ext = ".jpg"; content_type = "image/jpeg"
             elif "webp" in mime:
-                ext = ".webp"
+                ext = ".webp"; content_type = "image/webp"
             elif "gif" in mime:
-                ext = ".gif"
+                ext = ".gif"; content_type = "image/gif"
             elif "mp4" in mime:
-                ext = ".mp4"
+                ext = ".mp4"; content_type = "video/mp4"
+            # 上传 COS（优先），否则写本地
+            if cos_ready:
+                try:
+                    cos_url = cos_service.upload_bytes(
+                        raw, prefix="generated", user_id=current_user.id,
+                        content_type=content_type, ext=ext.lstrip("."),
+                    )
+                    urls.append(cos_url)
+                    continue
+                except Exception:
+                    pass  # fallback to local
             fname = f"{uuid.uuid4().hex}{ext}"
             fpath = user_dir / fname
             fpath.write_bytes(raw)
             urls.append(f"/api/v1/upload/{current_user.id}/{fname}")
             continue
-        # External URL (image or video): download and persist locally so the
-        # frontend is not affected by signed-URL expiration.
+        # External URL: download → upload to COS
         ext_url = item.get("url") or item.get("video_url") or item.get("audio_url")
         if isinstance(ext_url, str) and ext_url:
             saved_url = await _persist_external_url(ext_url, user_dir, current_user.id, modal_category)
-            urls.append(saved_url or ext_url)
+            if saved_url:
+                urls.append(saved_url)
+            else:
+                logger.warning("External URL persistence failed and was skipped to avoid returning a potentially expired URL: %s", ext_url)
     return urls
 
 
 async def _persist_external_url(url: str, user_dir: Path, user_id: int | str, modal_category: str) -> Optional[str]:
-    """Download an external media URL and save it locally. Returns the local URL or None."""
+    """Download an external media URL and upload to COS (or save locally as fallback)."""
     import httpx
+    from app.services import cos_service
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True) as client:
             response = await client.get(url)
@@ -448,6 +468,16 @@ async def _persist_external_url(url: str, user_dir: Path, user_id: int | str, mo
             elif modal_category == "image":
                 ext = ".png"
             fname = f"{uuid.uuid4().hex}{ext}"
+            # 优先上传 COS
+            if cos_service.is_configured():
+                try:
+                    cos_url = cos_service.upload_bytes(
+                        response.content, prefix="generated", user_id=user_id,
+                        content_type=content_type or "application/octet-stream", ext=ext.lstrip("."),
+                    )
+                    return cos_url
+                except Exception:
+                    pass  # fallback to local
             fpath = user_dir / fname
             fpath.write_bytes(response.content)
             return f"/api/v1/upload/{user_id}/{fname}"
@@ -474,6 +504,16 @@ async def _save_binary_response(
         ext = ".jpg"
     elif "webp" in ct:
         ext = ".webp"
+    # 优先上传 COS
+    from app.services import cos_service
+    if cos_service.is_configured():
+        try:
+            return cos_service.upload_bytes(
+                content, prefix="generated", user_id=current_user.id,
+                content_type=ct or "application/octet-stream", ext=ext.lstrip("."),
+            )
+        except Exception:
+            pass
     user_dir = Path(settings.UPLOAD_DIR) / str(current_user.id)
     user_dir.mkdir(parents=True, exist_ok=True)
     fname = f"{uuid.uuid4().hex}{ext}"

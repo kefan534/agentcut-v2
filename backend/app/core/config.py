@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     COS_REGION: str = "ap-guangzhou"
     COS_BUCKET: Optional[str] = None
 
+    # P1: IMA knowledge base
+    IMA_API_KEY: Optional[str] = None
+    IMA_CLIENT_ID: Optional[str] = None
+
+    # P1: 腾讯云 OCR (智能结构化识别)
+    TENCENT_OCR_SECRET_ID: Optional[str] = None
+    TENCENT_OCR_SECRET_KEY: Optional[str] = None
+    TENCENT_OCR_REGION: str = "ap-guangzhou"
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:

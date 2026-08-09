@@ -59,10 +59,34 @@ export default function AdminPage() {
                     { key: "variables", label: "变量映射", children: <VariablesTab /> },
                     { key: "users", label: "用户管理", children: <UsersTab /> },
                     { key: "logs", label: "调用日志", children: <LogsTab /> },
+                    { key: "skills", label: "Skill 审核", children: <SkillReviewTab /> },
+                    { key: "modelPricing", label: "模型白名单", children: <ModelPricingTab /> },
+                    { key: "auditLogs", label: "审计日志", children: <AuditLogsTab /> },
                 ]} />
             </div>
         </main>
     );
+}
+
+function SkillReviewTab() {
+    // 跳转到独立 Skill 审核页（或嵌入 iframe）
+    const navigate = useNavigate();
+    useEffect(() => {
+        navigate("/admin/skills");
+    }, [navigate]);
+    return <div className="py-8 text-center text-gray-400">正在跳转到 Skill 审核…</div>;
+}
+
+function ModelPricingTab() {
+    const navigate = useNavigate();
+    useEffect(() => { navigate("/admin/model-pricing"); }, [navigate]);
+    return <div className="py-8 text-center text-gray-400">正在跳转到模型白名单…</div>;
+}
+
+function AuditLogsTab() {
+    const navigate = useNavigate();
+    useEffect(() => { navigate("/admin/audit-logs"); }, [navigate]);
+    return <div className="py-8 text-center text-gray-400">正在跳转到审计日志…</div>;
 }
 
 function ModelsTab() {

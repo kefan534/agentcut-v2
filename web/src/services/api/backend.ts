@@ -1,6 +1,9 @@
 import axios, { type AxiosRequestConfig } from "axios";
 
-export const BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:8081";
+// VITE_BACKEND_URL is an absolute origin (e.g. http://localhost:8081 in dev).
+// Leave it empty in production deploys so requests go to the same origin and
+// the nginx reverse proxy forwards /api/v1/* to the FastAPI backend.
+export const BACKEND_BASE_URL = import.meta.env.VITE_BACKEND_URL || "";
 
 export const backend = axios.create({
     baseURL: `${BACKEND_BASE_URL}/api/v1`,
@@ -353,7 +356,10 @@ export async function deleteAsset(id: string) {
 
 export function getAssetUrl(storageKey: string) {
     if (!storageKey) return "";
+    // 已是完整 URL（含 COS presigned URL）直接返回
     if (/^https?:\/\//.test(storageKey)) return storageKey;
+    // storageKey 可能是本地路径（uploads/uuid/...）或 COS key（generated/uid/...）
+    // 统一走后端 /api/v1/upload/{storage_key} 解析，后端会返回本地文件或 COS 签名链接
     const prefix = storageKey.startsWith("/") ? "" : "/";
     return `${BACKEND_BASE_URL}/api/v1/upload${prefix}${storageKey}`;
 }

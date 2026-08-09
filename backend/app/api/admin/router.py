@@ -1,11 +1,14 @@
 from typing import List, Optional, Dict, Any
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Query
+import os
+import json
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_db
 from app.core.deps import get_current_user, require_admin
+from app.core.config import settings
 from app.core.encryption import encrypt_api_key
 from app.models.user import User
 from app.models.model import ApiSource, VariableMapping, ModelPlugin
@@ -285,3 +288,39 @@ def list_logs(
     if status:
         q = q.filter(CallLog.status == status)
     return q.order_by(CallLog.created_at.desc()).offset(offset).limit(limit).all()
+
+
+# ── P1: ima 知识库配置 ─────────────────────────────────────────
+
+@router.get("/ima/config")
+def get_ima_config(admin: User = Depends(require_admin)):
+    key = settings.IMA_API_KEY or ""
+    return {
+        "ok": True,
+        "configured": bool(key and settings.IMA_CLIENT_ID),
+        "maskedKey": (key[:8] + "***") if key else "",
+    }
+
+
+@router.put("/ima/config")
+async def update_ima_config(request: Request, admin: User = Depends(require_admin)):
+    body = await request.json()
+    if body.get("apiKey"):
+        settings.IMA_API_KEY = body["apiKey"]
+    if body.get("clientId"):
+        settings.IMA_CLIENT_ID = body["clientId"]
+    # P1: 持久化到 .env（重启保留）
+    try:
+        from app.services.env_persister import update_env_value
+        if body.get("apiKey") is not None:
+            update_env_value("IMA_API_KEY", body.get("apiKey", "") or "")
+        if body.get("clientId") is not None:
+            update_env_value("IMA_CLIENT_ID", body.get("clientId", "") or "")
+    except Exception:
+        pass  # 不阻断响应
+    return {"ok": True, "configured": bool(settings.IMA_API_KEY)}
+
+
+# P0: model_pricing admin API（独立 router）
+from app.api.admin.model_pricing import router as model_pricing_router  # noqa: E402
+from app.api.admin.audit_logs import router as audit_logs_router  # noqa: E402

@@ -149,6 +149,49 @@ def get_user_credits() -> str:
 
 
 @function_tool
+def asset_get_text(asset_ids: list) -> str:
+    """Read parsed/OCR text for referenced assets. Pass asset_ids from the user's @-mentions."""
+    return asyncio.run(_bridge_tool("asset_get_text", {"assetIds": asset_ids}))
+
+
+@function_tool
+def skill_list() -> str:
+    """List the current user's enabled Skills. Returns JSON with skill names and fragments."""
+    return asyncio.run(_bridge_tool("skill_list", {}))
+
+
+@function_tool
+def skill_enable(skill_id: str) -> str:
+    """Enable a Skill for the current user. If paid, credits are deducted and 30% goes to the submitter."""
+    return asyncio.run(_bridge_tool("skill_enable", {"skillId": skill_id}))
+
+
+@function_tool
+def skill_disable(skill_id: str) -> str:
+    """Disable a previously enabled Skill for the current user."""
+    return asyncio.run(_bridge_tool("skill_disable", {"skillId": skill_id}))
+
+
+@function_tool
+def ima_search(query: str, top_k: float = 5) -> str:
+    """Search the platform's shared ima knowledge base. Returns cited snippets."""
+    return asyncio.run(_bridge_tool("ima_search", {"query": query, "topK": int(top_k)}))
+
+
+@function_tool
+def asset_upload() -> str:
+    """Upload a file (image, audio, video, document) to user's asset library.
+    Pops a file picker on the web UI. Returns the new assetId."""
+    return asyncio.run(_bridge_tool("asset_upload", {}))
+
+
+@function_tool
+def asset_list(keyword: str = "", limit: float = 20) -> str:
+    """List the user's assets in the library (images/videos/audio/documents)."""
+    return asyncio.run(_bridge_tool("asset_list", {"keyword": keyword, "limit": int(limit)}))
+
+
+@function_tool
 def site_navigate(path: str) -> str:
     """Jump to a page on the AgentCut website."""
     return asyncio.run(_bridge_tool("site_navigate", {"path": path}))
@@ -494,6 +537,13 @@ def assets_add(kind: str, title: str, content: str = "", image_url: str = "", ta
 
 TOOLS = [
     get_user_credits,
+    asset_get_text,
+    asset_upload,
+    asset_list,
+    skill_list,
+    skill_enable,
+    skill_disable,
+    ima_search,
     site_navigate,
     canvas_list_projects,
     canvas_get_state,

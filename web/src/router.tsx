@@ -20,6 +20,19 @@ import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
 import SkillStorePage from "@/pages/skill-store";
 import VideoPage from "@/pages/video";
+import DramaLayout from "@/pages/drama/drama-layout";
+import DramaProjectsPage from "@/pages/drama/drama-projects";
+import DramaScriptPage from "@/pages/drama/drama-script";
+import DramaNovelPage from "@/pages/drama/drama-novel";
+import DramaAssetsPage from "@/pages/drama/drama-assets";
+import DramaStoryboardPage from "@/pages/drama/drama-storyboard";
+import {
+    DramaTasksPage,
+    DramaScriptAgentPage,
+    DramaArtStylePage,
+    DramaAudioPage,
+    DramaSettingsPage,
+} from "@/pages/drama/drama-module";
 import { useUserStore } from "@/stores/use-user-store";
 
 function RequireAuth({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
@@ -57,6 +70,25 @@ export const router = createBrowserRouter([
             { path: "/admin/skills", element: <RequireAuth adminOnly><AdminSkillReview /></RequireAuth> },
             { path: "/admin/model-pricing", element: <RequireAuth adminOnly><AdminModelPricing /></RequireAuth> },
             { path: "/admin/audit-logs", element: <RequireAuth adminOnly><AdminAuditLogs /></RequireAuth> },
+            {
+                path: "/drama",
+                element: <RequireAuth><DramaLayout /></RequireAuth>,
+                children: [
+                    { index: true, element: <Navigate to="/drama/projects" replace /> },
+                    { path: "projects", element: <DramaProjectsPage /> },
+                    { path: "tasks", element: <DramaTasksPage /> },
+                    { path: "script", element: <DramaScriptPage /> },
+                    { path: "script-agent", element: <DramaScriptAgentPage /> },
+                    { path: "novel", element: <DramaNovelPage /> },
+                    { path: "assets", element: <DramaAssetsPage /> },
+                    { path: "assets-generate", element: <DramaAssetsPage /> },
+                    { path: "art-style", element: <DramaArtStylePage /> },
+                    { path: "audio", element: <DramaAudioPage /> },
+                    { path: "storyboard", element: <DramaStoryboardPage /> },
+                    { path: "production", element: <DramaStoryboardPage /> },
+                    { path: "settings", element: <DramaSettingsPage /> },
+                ],
+            },
         ],
     },
     { path: "/login", element: <LoginPage /> },

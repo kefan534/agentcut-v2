@@ -11,7 +11,7 @@ from app.db.session import Base
 from app.core.config import settings
 
 # Import all models so Alembic can discover them
-from app.models import user, model, project, asset, log
+from app.models import user, model, project, asset, log, drama
 
 config = context.config
 

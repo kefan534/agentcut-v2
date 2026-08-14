@@ -1,24 +1,45 @@
 import { useEffect, useState } from "react";
-import { Card, Table, Tag, Switch, InputNumber, Input, message, Button, Modal, Statistic, Row, Col } from "antd";
+import { Button, Card, Spin, message } from "antd";
+import { CheckCircle2 } from "lucide-react";
 
-type ModelPricing = {
-    id: string; modelId: string; name: string; enabled: boolean;
-    supportsTools: boolean; costPerTurn: number; notes?: string | null;
-};
+const MAKERS_BUILTIN_MODELS = [
+    "@makers/hy3",
+    "@makers/hy3-preview",
+    "@makers/deepseek-v4-pro",
+    "@makers/deepseek-v4-flash",
+    "@makers/minimax-m3",
+    "@makers/minimax-m2.7",
+    "@makers/kimi-k2.6",
+];
+
+function displayName(modelId: string): string {
+    return modelId.replace("@makers/", "");
+}
+
+function capabilityTag(modelId: string): { label: string; color: string } | null {
+    if (modelId.includes("deepseek-v4-pro")) return { label: "能力强", color: "bg-stone-700 text-stone-300" };
+    if (modelId.includes("deepseek-v4-flash")) return { label: "速度快", color: "bg-purple-500/20 text-purple-300" };
+    if (modelId.includes("kimi-k2.6")) return { label: "长文本", color: "bg-stone-700 text-stone-300" };
+    if (modelId.includes("hy3")) return { label: "多模态", color: "bg-stone-700 text-stone-300" };
+    return null;
+}
 
 export default function AdminModelPricing() {
-    const [items, setItems] = useState<ModelPricing[]>([]);
+    const [selected, setSelected] = useState<string>("");
     const [loading, setLoading] = useState(true);
-    const [newOpen, setNewOpen] = useState(false);
-    const [newForm, setNewForm] = useState({ modelId: "", name: "", supportsTools: true, costPerTurn: 1, notes: "" });
+    const [saving, setSaving] = useState(false);
 
     const load = async () => {
         setLoading(true);
         try {
             const res = await fetch("/api/v1/admin/model-pricing", { credentials: "include" });
             const data = await res.json();
-            if (data.ok) setItems(data.items);
-            else message.error(data.detail || "加载失败");
+            if (data.ok) {
+                const enabled = data.items.find((m: { enabled: boolean; modelId: string }) => m.enabled);
+                setSelected(enabled?.modelId || "");
+            } else {
+                message.error(data.detail || "加载失败");
+            }
         } catch {
             message.error("网络错误");
         } finally {
@@ -26,127 +47,106 @@ export default function AdminModelPricing() {
         }
     };
 
-    useEffect(() => { load(); }, []);
+    useEffect(() => { void load(); }, []);
 
-    const update = async (modelId: string, updates: Partial<ModelPricing>) => {
-        const res = await fetch(`/api/v1/admin/model-pricing/${encodeURIComponent(modelId)}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(updates),
-        });
-        if (res.ok) {
-            message.success("已更新");
-            load();
-        } else {
-            const d = await res.json().catch(() => ({}));
-            message.error(d.detail || "更新失败");
+    const save = async () => {
+        if (!selected) {
+            message.warning("请先选择一个模型");
+            return;
+        }
+        setSaving(true);
+        try {
+            const res = await fetch("/api/v1/admin/model-pricing/select-builtin", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({ modelId: selected }),
+            });
+            const data = await res.json();
+            if (res.ok && data.ok) {
+                message.success("已保存");
+            } else {
+                message.error(data.detail || "保存失败");
+            }
+        } catch {
+            message.error("网络错误");
+        } finally {
+            setSaving(false);
         }
     };
-
-    const create = async () => {
-        const res = await fetch("/api/v1/admin/model-pricing", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify(newForm),
-        });
-        if (res.ok) {
-            message.success("已添加");
-            setNewOpen(false);
-            setNewForm({ modelId: "", name: "", supportsTools: true, costPerTurn: 1, notes: "" });
-            load();
-        } else {
-            const d = await res.json().catch(() => ({}));
-            message.error(d.detail || "添加失败");
-        }
-    };
-
-    const total = items.length;
-    const enabled = items.filter((m) => m.enabled).length;
-    const toolCapable = items.filter((m) => m.supportsTools && m.enabled).length;
 
     return (
-        <div className="p-6">
-            <h2 className="mb-4 text-lg font-bold">模型白名单（model_pricing）</h2>
-            <Row gutter={16} className="mb-4">
-                <Col span={8}><Card><Statistic title="模型总数" value={total} /></Card></Col>
-                <Col span={8}><Card><Statistic title="已启用" value={enabled} /></Card></Col>
-                <Col span={8}><Card><Statistic title="支持工具调用" value={toolCapable} /></Card></Col>
-            </Row>
-            <div className="mb-3 flex justify-end">
-                <Button type="primary" onClick={() => setNewOpen(true)}>添加模型</Button>
-            </div>
-            <Table<ModelPricing>
-                dataSource={items}
-                rowKey="id"
-                loading={loading}
-                pagination={{ pageSize: 20 }}
-                columns={[
-                    { title: "模型 ID", dataIndex: "modelId", width: 240, ellipsis: true },
-                    { title: "名称", dataIndex: "name", width: 200 },
-                    {
-                        title: "启用", dataIndex: "enabled", width: 80,
-                        render: (v: boolean, r: ModelPricing) => (
-                            <Switch checked={v} onChange={(c) => update(r.modelId, { enabled: c })} />
-                        ),
-                    },
-                    {
-                        title: "支持工具", dataIndex: "supportsTools", width: 100,
-                        render: (v: boolean, r: ModelPricing) => (
-                            <Tag color={v ? "green" : "default"}>{v ? "是" : "否"}</Tag>
-                        ),
-                    },
-                    {
-                        title: "单次积分", dataIndex: "costPerTurn", width: 100,
-                        render: (v: number, r: ModelPricing) => (
-                            <InputNumber
-                                size="small"
-                                min={0}
-                                value={v}
-                                onChange={(n) => update(r.modelId, { costPerTurn: n || 0 })}
-                                style={{ width: 80 }}
-                            />
-                        ),
-                    },
-                    {
-                        title: "操作", width: 100,
-                        render: (_: unknown, r: ModelPricing) => (
-                            <Button size="small" danger onClick={async () => {
-                                const res = await fetch(`/api/v1/admin/model-pricing/${encodeURIComponent(r.modelId)}`, {
-                                    method: "DELETE", credentials: "include",
-                                });
-                                if (res.ok) { message.success("已删除"); load(); }
-                            }}>删除</Button>
-                        ),
-                    },
-                ]}
-            />
-            <Modal title="添加模型" open={newOpen} onCancel={() => setNewOpen(false)} onOk={create} okText="添加">
-                <div className="space-y-3">
-                    <div>
-                        <div className="mb-1 text-sm">模型 ID（@makers/xxx）</div>
-                        <Input value={newForm.modelId} onChange={(e) => setNewForm({ ...newForm, modelId: e.target.value })} placeholder="@makers/deepseek-v4-flash" />
+        <div className="w-full max-w-7xl">
+            <h2 className="mb-2 text-2xl font-semibold text-stone-900 dark:text-stone-100">Agent内置模型</h2>
+            <p className="mb-6 text-sm text-stone-500 dark:text-stone-400">
+                选择当前 Agent 使用的 Makers 内置模型，每次只能选择一个。模型名称必须携带 <code className="rounded bg-stone-100 px-1 py-0.5 text-stone-700 dark:bg-stone-800 dark:text-stone-300">@makers/</code> 前缀。
+            </p>
+
+            <Card loading={loading} className="border-0 bg-transparent shadow-none" bodyStyle={{ padding: 0 }}>
+                <Spin spinning={loading}>
+                    <div className="flex flex-col gap-2">
+                        {MAKERS_BUILTIN_MODELS.map((modelId) => {
+                            const active = selected === modelId;
+                            const tag = capabilityTag(modelId);
+                            return (
+                                <button
+                                    key={modelId}
+                                    type="button"
+                                    onClick={() => setSelected(modelId)}
+                                    className={[
+                                        "group flex w-full items-center gap-4 rounded-xl border px-5 py-4 text-left transition",
+                                        "focus:outline-none focus:ring-2 focus:ring-purple-500/50",
+                                        active
+                                            ? "border-purple-500 bg-purple-500/10"
+                                            : "border-stone-200 bg-white hover:border-stone-400 dark:border-stone-700 dark:bg-stone-900/50 dark:hover:border-stone-500",
+                                    ].join(" ")}
+                                >
+                                    <div className={[
+                                        "flex size-6 shrink-0 items-center justify-center rounded-full border-2 transition",
+                                        active
+                                            ? "border-purple-500 bg-purple-500 text-white"
+                                            : "border-stone-300 dark:border-stone-600",
+                                    ].join(" ")}>
+                                        {active ? <CheckCircle2 className="size-4" /> : <div className="size-2.5 rounded-full bg-transparent" />}
+                                    </div>
+
+                                    <div className="min-w-0 flex-1">
+                                        <div className="flex items-center gap-3">
+                                            <span className={["text-base font-medium", active ? "text-stone-900 dark:text-white" : "text-stone-700 dark:text-stone-200"].join(" ")}>
+                                                {displayName(modelId)}
+                                            </span>
+                                            {tag ? (
+                                                <span className={["rounded px-2 py-0.5 text-xs", tag.color].join(" ")}>
+                                                    {tag.label}
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        <div className="mt-0.5 font-mono text-xs text-stone-400 dark:text-stone-500">
+                                            {modelId}
+                                        </div>
+                                    </div>
+
+                                    {active ? (
+                                        <span className="shrink-0 rounded bg-purple-500 px-2.5 py-1 text-xs font-medium text-white">
+                                            当前启用
+                                        </span>
+                                    ) : (
+                                        <span className="shrink-0 rounded bg-stone-100 px-2.5 py-1 text-xs text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+                                            未启用
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
                     </div>
-                    <div>
-                        <div className="mb-1 text-sm">名称</div>
-                        <Input value={newForm.name} onChange={(e) => setNewForm({ ...newForm, name: e.target.value })} />
-                    </div>
-                    <div className="flex gap-3">
-                        <div>
-                            <div className="mb-1 text-sm">单次积分</div>
-                            <InputNumber min={0} value={newForm.costPerTurn} onChange={(n) => setNewForm({ ...newForm, costPerTurn: n || 0 })} />
-                        </div>
-                        <div className="flex items-end">
-                            <Switch checked={newForm.supportsTools} onChange={(c) => setNewForm({ ...newForm, supportsTools: c })} checkedChildren="支持工具" unCheckedChildren="不支持" />
-                        </div>
-                    </div>
-                    <div>
-                        <div className="mb-1 text-sm">备注</div>
-                        <Input.TextArea rows={2} value={newForm.notes} onChange={(e) => setNewForm({ ...newForm, notes: e.target.value })} />
-                    </div>
+                </Spin>
+
+                <div className="mt-6 flex justify-end">
+                    <Button type="primary" size="large" loading={saving} onClick={() => void save()}>
+                        保存
+                    </Button>
                 </div>
-            </Modal>
+            </Card>
         </div>
     );
 }

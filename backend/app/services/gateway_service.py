@@ -390,8 +390,7 @@ def _validate_endpoint(endpoint: str):
     """Only allow plain relative API paths; reject scheme, host, query, fragments."""
     if not endpoint:
         return
-    if not endpoint.startswith("/"):
-        raise HTTPException(status_code=400, detail="Endpoint must be a relative path starting with /")
+    # 相对路径允许无前导 "/"（_build_upstream_url 会自动补全），如 "chat/completions"。
     if not _ENDPOINT_PATH_RE.match(endpoint):
         raise HTTPException(status_code=400, detail="Endpoint contains invalid characters")
     if "//" in endpoint or ".." in endpoint:

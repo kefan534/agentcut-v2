@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { App, Button, Input, Segmented, Select, Tag, Tooltip } from "antd";
+import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
 import { ChevronDown, Copy, Database, Download, ExternalLink, FileText, Film, FolderOpen, History, ImageIcon, LoaderCircle, MessageSquare, Music, AtSign, PlugZap, Plus, RefreshCw, Square, Terminal, Trash2, Upload, Zap } from "lucide-react";
 
@@ -62,7 +62,7 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     // 注意：canvasContext 不在此订阅内 —— 它在拖拽/resize 时会被 project 每帧写入，
     // 但面板只在 ref 同步与防抖 postState 中用到它、渲染层从不读它。若把它放进订阅，
     // 面板会随画布每帧重渲染（性能问题，也是 #185 崩溃的放大器）。改为下方 subscribe 命令式监听。
-    const { width, url, token, connected, enabled, prompt, attachments, assetRefs, modelId, availableModels, modelsLoading, sending, waiting, messages, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, activity, connectError, pendingTool } = useAgentStore(
+    const { width, url, token, connected, enabled, prompt, attachments, assetRefs, sending, waiting, messages, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, activity, connectError, pendingTool } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -96,8 +96,6 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
     const clearEventLogs = useAgentStore((state) => state.clearEventLogs);
     const addAssetRef = useAgentStore((state) => state.addAssetRef);
     const removeAssetRef = useAgentStore((state) => state.removeAssetRef);
-    const fetchModels = useAgentStore((state) => state.fetchModels);
-    const setModel = useAgentStore((state) => state.setModel);
     const listRef = useRef<HTMLDivElement>(null);
     const followMessagesRef = useRef(true);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
@@ -336,15 +334,10 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
             document.removeEventListener("visibilitychange", activateVisible);
         };
     }, [connected, endpoint, token]);
-    // P0: fetch available models when connected
-    useEffect(() => {
-        if (connected) void fetchModels();
-    }, [connected, fetchModels]);
     const sendPrompt = async () => {
         const text = prompt.trim();
         const files = attachments;
         const refs = useAgentStore.getState().assetRefs;
-        const currentModel = useAgentStore.getState().modelId;
         const requestPrompt = promptWithAttachments(text, files);
         if (!connected || !requestPrompt || sending || waiting) return;
         if (attachmentPayloadBytes(files) > MAX_ATTACHMENT_PAYLOAD_BYTES) {
@@ -366,7 +359,6 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                     clientId: clientIdRef.current,
                     threadId: useAgentStore.getState().activeThreadId || undefined,
                     attachments: files.map(({ id, name, type, size, width, height, dataUrl }) => ({ id, name, type, size, width, height, dataUrl })),
-                    model: currentModel || undefined,
                     assetIds: refs.map((r) => r.assetId),
                 }),
             });
@@ -817,9 +809,6 @@ export function CanvasEdgeoneAgentPanel({ embedded, headless, autoConnect }: { e
                         left={
                             <AgentChatPlusMenu onAssetRef={addAssetRef} onAddFiles={addAttachments} />
                         }
-                        right={
-                            <AgentChatModelSelector value={modelId} models={availableModels} loading={modelsLoading} onChange={setModel} />
-                        }
                     />
                 </>
             )}
@@ -983,27 +972,6 @@ function AgentChatPlusMenu({ onAssetRef, onAddFiles }: { onAssetRef: (ref: Asset
 }
 
 /* ── P0: 模型选择器（持久化到 users.agent_model） ─────────── */
-
-function AgentChatModelSelector({ value, models, loading, onChange }: { value: string; models: { id: string; name: string; kind?: string; costPerTurn?: number }[]; loading: boolean; onChange: (id: string) => void }) {
-    if (loading) return <Tag color="purple" className="!m-0 shrink-0">加载中…</Tag>;
-    if (!models.length) {
-        return <Tag color="purple" className="!m-0 shrink-0" icon={<Zap className="size-3" />}>Makers Agent</Tag>;
-    }
-    const current = models.find((m) => m.id === value);
-    return (
-        <Select
-            size="small"
-            value={value || current?.id || ""}
-            onChange={(v) => onChange(v as string)}
-            options={models.map((m) => ({
-                value: m.id,
-                label: `${m.name}${m.costPerTurn != null && m.costPerTurn > 0 ? ` (${m.costPerTurn} 积分)` : ""}`,
-            }))}
-            style={{ minWidth: 150, maxWidth: 220 }}
-            placeholder="选择模型"
-        />
-    );
-}
 
 /* ── Agent 输出 / 产物页面 ─────────────────────────────────── */
 

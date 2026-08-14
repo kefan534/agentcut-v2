@@ -44,9 +44,9 @@ export default function AdminAuditLogs() {
     useEffect(() => { load(); }, [filters]);
 
     return (
-        <div className="p-6">
-            <h2 className="mb-4 text-lg font-bold">审计日志（最近 {filters.days} 天，共 {total} 条）</h2>
+        <div>
             <div className="mb-4 flex items-center gap-3">
+                <span className="text-sm font-medium">审计日志（最近 {filters.days} 天，共 {total} 条）</span>
                 <Select value={filters.days} onChange={(v) => setFilters({ ...filters, days: v })}
                     style={{ width: 140 }} options={[7, 14, 30, 60, 90].map(d => ({ value: d, label: `最近 ${d} 天` }))} />
                 <Select value={filters.event || undefined} onChange={(v) => setFilters({ ...filters, event: v || "" })}

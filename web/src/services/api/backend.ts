@@ -320,6 +320,265 @@ export async function deleteProject(id: string) {
     await backend.delete(`/projects/${id}`);
 }
 
+// Drama (short-drama / Toonflow) projects
+export type DramaProject = {
+    id: string;
+    user_id: string;
+    name: string;
+    intro: string | null;
+    project_type: string | null;
+    type: string | null;
+    art_style: string | null;
+    director_manual: string | null;
+    video_ratio: string | null;
+    image_model: string | null;
+    video_model: string | null;
+    image_quality: string | null;
+    mode: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaProjects() {
+    const { data } = await backend.get<DramaProject[]>("/drama/projects");
+    return data;
+}
+
+export async function createDramaProject(payload: Partial<Omit<DramaProject, "id" | "user_id" | "is_deleted" | "created_at" | "updated_at">>) {
+    const { data } = await backend.post<DramaProject>("/drama/projects", payload);
+    return data;
+}
+
+export async function getDramaProject(id: string) {
+    const { data } = await backend.get<DramaProject>(`/drama/projects/${id}`);
+    return data;
+}
+
+export async function updateDramaProject(id: string, payload: Partial<Omit<DramaProject, "id" | "user_id" | "is_deleted" | "created_at" | "updated_at">>) {
+    const { data } = await backend.put<DramaProject>(`/drama/projects/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaProject(id: string) {
+    await backend.delete(`/drama/projects/${id}`);
+}
+
+// Drama novels (小说原文章节)
+export type DramaNovel = {
+    id: string;
+    user_id: string;
+    project_id: string;
+    chapter_index: number;
+    reel: string | null;
+    chapter: string | null;
+    chapter_data: string | null;
+    event_state: number;
+    event: string | null;
+    error_reason: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaNovels(projectId: string, page = 1, limit = 50) {
+    const { data } = await backend.get<DramaNovel[]>("/drama/novels", {
+        params: { project_id: projectId, page, limit },
+    });
+    return data;
+}
+
+export async function createDramaNovels(projectId: string, items: { reel?: string; chapter?: string; chapter_data?: string }[]) {
+    const { data } = await backend.post<DramaNovel[]>("/drama/novels", { project_id: projectId, items });
+    return data;
+}
+
+export async function updateDramaNovel(id: string, payload: { reel?: string; chapter?: string; chapter_data?: string }) {
+    const { data } = await backend.put<DramaNovel>(`/drama/novels/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaNovel(id: string) {
+    await backend.delete(`/drama/novels/${id}`);
+}
+
+export async function extractDramaNovelEvents(projectId: string, novelIds: string[] = []) {
+    const { data } = await backend.post<{ ok: boolean; detail: string }>("/drama/novels/extract-events", {
+        project_id: projectId,
+        novel_ids: novelIds,
+    });
+    return data;
+}
+
+// Drama scripts (剧本)
+export type DramaScript = {
+    id: string;
+    user_id: string;
+    project_id: string;
+    name: string;
+    content: string | null;
+    extract_state: number;
+    error_reason: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaScripts(projectId: string) {
+    const { data } = await backend.get<DramaScript[]>("/drama/scripts", {
+        params: { project_id: projectId },
+    });
+    return data;
+}
+
+export async function createDramaScript(projectId: string, name: string, content?: string) {
+    const { data } = await backend.post<DramaScript>("/drama/scripts", { project_id: projectId, name, content });
+    return data;
+}
+
+export async function getDramaScript(id: string) {
+    const { data } = await backend.get<DramaScript>(`/drama/scripts/${id}`);
+    return data;
+}
+
+export async function updateDramaScript(id: string, payload: { name?: string; content?: string }) {
+    const { data } = await backend.put<DramaScript>(`/drama/scripts/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaScript(id: string) {
+    await backend.delete(`/drama/scripts/${id}`);
+}
+
+// Drama assets (资产)
+export type DramaAsset = {
+    id: string;
+    user_id: string;
+    project_id: string;
+    name: string;
+    describe: string | null;
+    type: string | null;
+    prompt: string | null;
+    remark: string | null;
+    image_url: string | null;
+    image_model: string | null;
+    image_state: string | null;
+    error_reason: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaAssets(projectId: string, assetType?: string) {
+    const { data } = await backend.get<DramaAsset[]>("/drama/assets", {
+        params: { project_id: projectId, asset_type: assetType },
+    });
+    return data;
+}
+
+export async function createDramaAsset(payload: { project_id: string; name: string; type?: string; describe?: string; prompt?: string; remark?: string }) {
+    const { data } = await backend.post<DramaAsset>("/drama/assets", payload);
+    return data;
+}
+
+export async function updateDramaAsset(id: string, payload: { name?: string; type?: string; describe?: string; prompt?: string; remark?: string }) {
+    const { data } = await backend.put<DramaAsset>(`/drama/assets/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaAsset(id: string) {
+    await backend.delete(`/drama/assets/${id}`);
+}
+
+export async function generateDramaAsset(id: string, model: string, size = "1024x1024") {
+    const { data } = await backend.post<DramaAsset>(`/drama/assets/${id}/generate`, { model, size });
+    return data;
+}
+
+// Drama storyboard (分镜)
+export type DramaStoryboard = {
+    id: string;
+    user_id: string;
+    project_id: string;
+    script_id: string | null;
+    index: number;
+    prompt: string | null;
+    video_desc: string | null;
+    duration: number | null;
+    image_url: string | null;
+    image_state: string | null;
+    error_reason: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaStoryboards(projectId: string, scriptId?: string) {
+    const { data } = await backend.get<DramaStoryboard[]>("/drama/storyboards", {
+        params: { project_id: projectId, script_id: scriptId },
+    });
+    return data;
+}
+
+export async function createDramaStoryboard(payload: { project_id: string; script_id?: string; index?: number; prompt?: string; video_desc?: string; duration?: number }) {
+    const { data } = await backend.post<DramaStoryboard>("/drama/storyboards", payload);
+    return data;
+}
+
+export async function updateDramaStoryboard(id: string, payload: Partial<DramaStoryboard>) {
+    const { data } = await backend.put<DramaStoryboard>(`/drama/storyboards/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaStoryboard(id: string) {
+    await backend.delete(`/drama/storyboards/${id}`);
+}
+
+export async function generateStoryboardImage(id: string, model: string, size = "1024x1024") {
+    const { data } = await backend.post<DramaStoryboard>(`/drama/storyboards/${id}/generate-image`, { model, size });
+    return data;
+}
+
+export async function generateStoryboardsFromScript(projectId: string, scriptId: string) {
+    const { data } = await backend.post<{ ok: boolean; count: number }>("/drama/storyboards/generate-from-script", {
+        project_id: projectId,
+        script_id: scriptId,
+    });
+    return data;
+}
+
+// Drama video (视频)
+export type DramaVideo = {
+    id: string;
+    user_id: string;
+    project_id: string;
+    script_id: string | null;
+    storyboard_id: string | null;
+    prompt: string | null;
+    video_url: string | null;
+    duration: number | null;
+    model: string | null;
+    state: string;
+    error_reason: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaVideos(projectId: string) {
+    const { data } = await backend.get<DramaVideo[]>("/drama/videos", { params: { project_id: projectId } });
+    return data;
+}
+
+export async function createDramaVideo(payload: { project_id: string; script_id?: string; storyboard_id?: string; prompt?: string; duration?: number; model: string }) {
+    const { data } = await backend.post<DramaVideo>("/drama/videos", payload);
+    return data;
+}
+
+export async function deleteDramaVideo(id: string) {
+    await backend.delete(`/drama/videos/${id}`);
+}
+
 // Assets
 export type BackendAsset = {
     id: string;

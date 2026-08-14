@@ -88,19 +88,6 @@ export function AppTopNav() {
                                             </Link>
                                         );
                                     })}
-                                {currentUser?.role === "admin" ? (
-                                    <Link
-                                        to="/admin"
-                                        className={cn(
-                                            "relative flex h-14 shrink-0 items-center gap-2 text-sm leading-6 transition after:absolute after:inset-x-0 after:bottom-0 after:h-px",
-                                            pathname === "/admin"
-                                                ? "font-medium text-stone-950 after:bg-stone-950 dark:text-stone-100 dark:after:bg-stone-100"
-                                                : "text-stone-500 after:bg-transparent hover:text-stone-950 dark:text-stone-400 dark:hover:text-stone-100",
-                                        )}
-                                    >
-                                        <span className="truncate">管理后台</span>
-                                    </Link>
-                                ) : null}
                             </nav>
                         </div>
 
@@ -110,10 +97,15 @@ export function AppTopNav() {
                                     menu={{
                                         items: [
                                             { key: "profile", label: `${currentUser.displayName}（${currentUser.credits} 积分）`, disabled: true },
+                                            { key: "assets", label: "我的资产" },
+                                            { key: "my-revenue", label: "我的收入" },
                                             ...(currentUser.role === "admin" ? [{ key: "admin", label: "管理后台" }] : []),
+                                            { type: "divider" },
                                             { key: "logout", label: "退出登录" },
                                         ],
                                         onClick: async ({ key }) => {
+                                            if (key === "assets") navigate("/assets");
+                                            if (key === "my-revenue") navigate("/my-revenue");
                                             if (key === "admin") navigate("/admin");
                                             if (key === "logout") {
                                                 await logout();

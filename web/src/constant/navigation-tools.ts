@@ -1,4 +1,4 @@
-import { FileText, ImagePlus, Images, Maximize2, Settings2, Video, Wallet, Zap } from "lucide-react";
+import { Clapperboard, FileText, ImagePlus, Maximize2, Video, Zap } from "lucide-react";
 
 export const navigationTools = [
     {
@@ -26,28 +26,16 @@ export const navigationTools = [
         adminOnly: false,
     },
     {
-        slug: "assets",
-        label: "我的资产",
-        icon: Images,
-        adminOnly: false,
-    },
-    {
         slug: "skill-store",
         label: "Skill 商店",
         icon: Zap,
         adminOnly: false,
     },
     {
-        slug: "my-revenue",
-        label: "我的收入",
-        icon: Wallet,
+        slug: "drama",
+        label: "短剧工坊",
+        icon: Clapperboard,
         adminOnly: false,
-    },
-    {
-        slug: "config",
-        label: "设置",
-        icon: Settings2,
-        adminOnly: true,
     },
 ] as const;
 

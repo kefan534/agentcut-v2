@@ -15,7 +15,7 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status, WebSocketException
@@ -36,8 +36,17 @@ from app.services import cos_service
 from app.services.credit_service import get_user_credits, deduct_credits
 from app.services.model_service import build_catalog
 from app.services.gateway_service import COST_MAP
+from app.services.agent_loop import run_local_agent, BUILTIN_TOOLS, build_skill_tools
+from app.services.drama_agent import make_script_agent
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+
+# 通用 Agent 系统提示词（P0.5 本地 Agent，替代 EdgeOne Makers 的通用对话角色）
+LOCAL_AGENT_SYSTEM_PROMPT = (
+    "你是 AgentCut 的智能助手，帮助用户完成 AI 创作（生图、生视频、剪辑、短剧）等任务。\n"
+    "你可以调用工具查询用户积分、检索素材、搜索知识库、查看已启用技能。\n"
+    "回答使用中文，简洁准确；不确定时如实说明。"
+)
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -174,6 +183,9 @@ class _TurnPayload(BaseModel):
     # P0 注入：素材 @ 引用 + 用户选择的模型
     model: Optional[str] = ""
     assetIds: List[str] = Field(default_factory=list)
+    # P3 剧本智能体：Agent 作用域 + 项目上下文
+    scope: Optional[str] = "general"   # general | script_agent
+    projectId: Optional[str] = None
 
 
 def _get_user_queues(user_id: str) -> Dict[str, asyncio.Queue]:
@@ -311,25 +323,9 @@ async def agent_turn(
     payload: _TurnPayload,
     current_user: User = Depends(get_current_user),
 ):
-    if not EDGEONE_MAKERS_AGENT_URL:
-        raise HTTPException(status_code=503, detail="EdgeOne Makers agent URL is not configured")
-
     user_id = str(current_user.id)
     thread_id = payload.threadId or str(uuid.uuid4())
     conversation_id = _build_conversation_id(user_id, thread_id)
-
-    makers_body = {
-        "prompt": payload.prompt,
-        "messageText": payload.messageText,
-        "messageId": payload.messageId,
-        "client_id": payload.clientId,
-        "thread_id": thread_id,
-        "user_id": user_id,
-        "attachments": payload.attachments,
-        "model": payload.model or "",
-        "assetIds": payload.assetIds or [],
-    }
-
 
     # P2: inject enabled skill fragments into the prompt
     db = next(get_db())
@@ -337,6 +333,21 @@ async def agent_turn(
     from app.models.asset import Asset
     fragments = []
     pre_prompt_parts = []
+
+    # P3 剧本智能体：校验项目归属，防止越权
+    if payload.scope == "script_agent":
+        if not payload.projectId:
+            db.close()
+            raise HTTPException(status_code=400, detail="剧本智能体需要 projectId")
+        from app.models.drama import DramaProject
+        project = db.query(DramaProject).filter(
+            DramaProject.id == payload.projectId,
+            DramaProject.user_id == current_user.id,
+            DramaProject.is_deleted == "N",
+        ).first()
+        if not project:
+            db.close()
+            raise HTTPException(status_code=400, detail="项目不存在或无权访问")
 
     # 注入已启用 Skill 的 prompt_fragment
     bindings = db.query(UserSkillBinding).filter(UserSkillBinding.user_id == current_user.id).all()
@@ -379,24 +390,65 @@ async def agent_turn(
             ref_block += "\n</attachment>"
             pre_prompt_parts.append(ref_block)
 
+    final_prompt = payload.prompt or ""
     if pre_prompt_parts:
-        makers_body["prompt"] = "\n\n".join(pre_prompt_parts) + "\n\n" + (payload.prompt or "")
+        final_prompt = "\n\n".join(pre_prompt_parts) + "\n\n" + final_prompt
 
     db.close()
 
     # Persist the user message immediately so history always shows the turn,
-    # even if Makers later returns an error.
+    # even if the agent loop later returns an error.
     _add_user_message(user_id, thread_id, payload.messageText or payload.prompt)
 
-    # Start the Makers stream in the background; events are pushed to the
-    # user's SSE queues as they arrive.
-    asyncio.create_task(_stream_from_makers(user_id, thread_id, conversation_id, makers_body))
+    # Build OpenAI messages + tools based on scope, then run the process-local
+    # agent loop in the background. Events are pushed to the user's SSE queues.
+    if payload.scope == "script_agent" and payload.projectId:
+        system_prompt, tools, execute_fn = make_script_agent(payload.projectId)
+    else:
+        system_prompt = LOCAL_AGENT_SYSTEM_PROMPT
+        tools = BUILTIN_TOOLS + build_skill_tools(user_id)
+        execute_fn = None
+    messages = _build_openai_messages(user_id, thread_id, final_prompt, system_prompt)
+    asyncio.create_task(_run_local_agent_task(user_id, thread_id, conversation_id, messages, tools, execute_fn))
 
     return {
         "ok": True,
         "threadId": thread_id,
         "conversationId": conversation_id,
     }
+
+
+def _build_openai_messages(user_id: str, thread_id: str, final_prompt: str, system_prompt: str) -> List[Dict[str, Any]]:
+    """Build OpenAI-format messages from stored history + the current prompt."""
+    thread = _ensure_thread(user_id, thread_id)
+    history = thread.get("messages", [])
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
+    # history[:-1] drops the just-appended user message; we re-add it as final_prompt
+    # (which carries the injected skill fragments / asset references).
+    for m in history[:-1]:
+        if m.get("role") in ("user", "assistant"):
+            messages.append({"role": m["role"], "content": m.get("content", "")})
+    messages.append({"role": "user", "content": final_prompt})
+    return messages
+
+
+async def _run_local_agent_task(
+    user_id: str,
+    thread_id: str,
+    conversation_id: str,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    execute_fn=None,
+) -> None:
+    """Run the local agent loop and persist the assistant reply to history."""
+    stream_id = f"{conversation_id}:msg"
+
+    def emit(event_name: str, payload: Dict[str, Any]) -> None:
+        _enqueue(user_id, event_name, payload)
+
+    text = await run_local_agent(user_id, thread_id, messages, tools, emit, stream_id, execute_fn)
+    if text:
+        _add_assistant_message(user_id, thread_id, text)
 
 
 async def _stream_from_makers(user_id: str, thread_id: str, conversation_id: str, body: Dict[str, Any]) -> None:
@@ -703,30 +755,73 @@ def list_knowledge_bases(current_user: User = Depends(get_current_user)):
 # Model selection (P0) — list allowed models and switch
 # ---------------------------------------------------------------------------
 
+# Makers 内置模型固定列表（与 admin/model_pricing.py 保持一致）
+MAKERS_BUILTIN_MODELS = [
+    "@makers/hy3",
+    "@makers/hy3-preview",
+    "@makers/deepseek-v4-pro",
+    "@makers/deepseek-v4-flash",
+    "@makers/minimax-m3",
+    "@makers/minimax-m2.7",
+    "@makers/kimi-k2.6",
+]
+
+
+def _get_active_builtin_model(db: Session) -> str:
+    """Return the currently enabled builtin model, defaulting to env var or first builtin."""
+    from app.models.model_pricing import ModelPricing
+    row = db.query(ModelPricing).filter(ModelPricing.enabled == True).first()
+    if row:
+        return row.model_id
+    return os.environ.get("AI_GATEWAY_MODEL", "") or MAKERS_BUILTIN_MODELS[0]
+
+
 @router.get("/models")
 async def agent_list_models(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user_optional),
 ):
-    """Return enabled models from model_pricing whitelist (P0: PRD §3.2.4 白名单服务端强制)."""
-    from app.models.model_pricing import ModelPricing
-    rows = db.query(ModelPricing).filter(ModelPricing.enabled == True).order_by(ModelPricing.cost_per_turn.asc()).all()
-    models = [
-        {
-            "id": r.model_id,
-            "name": r.name,
-            "vendor": "",
+    """Return the gateway text models the local Agent actually uses (P0.5+).
+
+    The process-local agent resolves its text model through the AgentCut
+    gateway (``modal_category == "text"``), no longer through the EdgeOne
+    Makers builtin list.
+    """
+    from app.models.model import VariableMapping
+    from app.services.model_service import resolve_source_for_variable, first_active_source_by_category
+
+    models = []
+    seen = set()
+    for m in db.query(VariableMapping).filter(VariableMapping.modal_category == "text").all():
+        source = resolve_source_for_variable(db, m.variable_name, current_user)
+        if not source or m.variable_name in seen:
+            continue
+        seen.add(m.variable_name)
+        models.append({
+            "id": m.variable_name,
+            "name": m.variable_name,
+            "vendor": source.vendor,
             "kind": "text",
-            "supportsTools": r.supports_tools,
-            "costPerTurn": r.cost_per_turn,
-        }
-        for r in rows
-    ]
-    current = ""
-    if current_user:
-        user_db = db.query(User).filter(User.id == current_user.id).first()
-        current = (user_db.agent_model if user_db and user_db.agent_model else "") or os.environ.get("AI_GATEWAY_MODEL", "")
+            "supportsTools": True,
+            "costPerTurn": 1,
+            "enabled": True,
+        })
+
+    if not models:
+        source = first_active_source_by_category(db, "text", current_user)
+        if source:
+            models.append({
+                "id": source.model_version,
+                "name": source.model_version,
+                "vendor": source.vendor,
+                "kind": "text",
+                "supportsTools": True,
+                "costPerTurn": 1,
+                "enabled": True,
+            })
+
+    current = models[0]["id"] if models else ""
     return {"ok": True, "models": models, "current": current}
 
 
@@ -735,30 +830,10 @@ async def agent_set_model(
     request: Request,
     current_user: User = Depends(get_current_user),
 ):
-    """Persist model selection (PRD §3.2.4: 服务端白名单强制 + supportsTools 校验)."""
+    """Compatibility no-op: the local Agent's model is set by the gateway route,
+    not per-user selection."""
     body = await request.json()
     model_id = (body or {}).get("modelId", "")
-    db = next(get_db())
-    if model_id:
-        # 服务端白名单强制
-        from app.models.model_pricing import ModelPricing
-        allowed = db.query(ModelPricing).filter(
-            ModelPricing.model_id == model_id,
-            ModelPricing.enabled == True,
-        ).first()
-        if not allowed:
-            db.close()
-            raise HTTPException(status_code=403, detail="模型不在白名单中或已禁用")
-        if not allowed.supports_tools:
-            db.close()
-            raise HTTPException(status_code=403, detail="该模型不支持工具调用（Agent 依赖工具链）")
-    from datetime import datetime as _dt
-    current_user_db = db.query(User).filter(User.id == current_user.id).first()
-    if current_user_db:
-        current_user_db.agent_model = model_id or None
-        current_user_db.agent_model_updated_at = _dt.utcnow()
-        db.commit()
-    db.close()
     return {"ok": True, "modelId": model_id}
 
 

@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { App, Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tabs, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
+import { PageContainer } from "@/components/layout/page-container";
+import { AppConfigPanel } from "@/components/layout/app-config-modal";
+import AdminSkillReview from "@/pages/admin-skill-review";
+import AdminModelPricing from "@/pages/admin-model-pricing";
+import AdminAuditLogs from "@/pages/admin-audit-logs";
 import {
     adminListModels,
     adminCreateModel,
@@ -33,11 +38,25 @@ const CATEGORIES = [
 
 const LEVELS_OPTIONS = ["free", "paid", "vip", "admin"].map((v) => ({ value: v, label: v }));
 
+const TAB_KEY_BY_PATH: Record<string, string> = {
+    "/admin": "models",
+    "/admin/skills": "skills",
+    "/admin/model-pricing": "modelPricing",
+    "/admin/audit-logs": "auditLogs",
+    "/admin/config": "config",
+};
+
 export default function AdminPage() {
     const { message } = App.useApp();
     const navigate = useNavigate();
+    const { pathname } = useLocation();
     const currentUser = useUserStore((state) => state.user);
-    const [activeTab, setActiveTab] = useState("models");
+    const [activeTab, setActiveTab] = useState(() => TAB_KEY_BY_PATH[pathname] || "models");
+
+    useEffect(() => {
+        const key = TAB_KEY_BY_PATH[pathname];
+        if (key) setActiveTab(key);
+    }, [pathname]);
 
     useEffect(() => {
         if (!currentUser) {
@@ -50,43 +69,33 @@ export default function AdminPage() {
         }
     }, [currentUser, navigate, message]);
 
+    const items = useMemo(() => [
+        { key: "models", label: "模型管理", children: <ModelsTab /> },
+        { key: "variables", label: "变量映射", children: <VariablesTab /> },
+        { key: "users", label: "用户管理", children: <UsersTab /> },
+        { key: "logs", label: "调用日志", children: <LogsTab /> },
+        { key: "skills", label: "Skill 审核", children: <AdminSkillReview /> },
+        { key: "modelPricing", label: "Agent内置模型", children: <AdminModelPricing /> },
+        { key: "auditLogs", label: "审计日志", children: <AdminAuditLogs /> },
+        { key: "config", label: "设置", children: <AppConfigPanel /> },
+    ], []);
+
     return (
-        <main className="h-full overflow-y-auto bg-background p-6 text-foreground">
-            <div className="mx-auto max-w-7xl">
-                <h1 className="mb-6 text-2xl font-semibold">管理后台</h1>
-                <Tabs activeKey={activeTab} onChange={setActiveTab} items={[
-                    { key: "models", label: "模型管理", children: <ModelsTab /> },
-                    { key: "variables", label: "变量映射", children: <VariablesTab /> },
-                    { key: "users", label: "用户管理", children: <UsersTab /> },
-                    { key: "logs", label: "调用日志", children: <LogsTab /> },
-                    { key: "skills", label: "Skill 审核", children: <SkillReviewTab /> },
-                    { key: "modelPricing", label: "模型白名单", children: <ModelPricingTab /> },
-                    { key: "auditLogs", label: "审计日志", children: <AuditLogsTab /> },
-                ]} />
-            </div>
+        <main className="h-full overflow-hidden bg-background text-foreground">
+            <PageContainer scroll>
+                <h1 className="mb-4 mt-6 text-2xl font-semibold">管理后台</h1>
+                <Tabs
+                    activeKey={activeTab}
+                    onChange={(key) => {
+                        setActiveTab(key);
+                        const path = Object.entries(TAB_KEY_BY_PATH).find(([, value]) => value === key)?.[0] || "/admin";
+                        window.history.replaceState(null, "", path);
+                    }}
+                    items={items}
+                />
+            </PageContainer>
         </main>
     );
-}
-
-function SkillReviewTab() {
-    // 跳转到独立 Skill 审核页（或嵌入 iframe）
-    const navigate = useNavigate();
-    useEffect(() => {
-        navigate("/admin/skills");
-    }, [navigate]);
-    return <div className="py-8 text-center text-gray-400">正在跳转到 Skill 审核…</div>;
-}
-
-function ModelPricingTab() {
-    const navigate = useNavigate();
-    useEffect(() => { navigate("/admin/model-pricing"); }, [navigate]);
-    return <div className="py-8 text-center text-gray-400">正在跳转到模型白名单…</div>;
-}
-
-function AuditLogsTab() {
-    const navigate = useNavigate();
-    useEffect(() => { navigate("/admin/audit-logs"); }, [navigate]);
-    return <div className="py-8 text-center text-gray-400">正在跳转到审计日志…</div>;
 }
 
 function ModelsTab() {

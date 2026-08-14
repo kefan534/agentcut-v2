@@ -123,8 +123,7 @@ export default function AdminSkillReview() {
     ];
 
     return (
-        <div className="p-6">
-            <h2 className="mb-4 text-lg font-bold">Skill 审核管理</h2>
+        <div>
             <div className="mb-4 flex items-center gap-3">
                 <span className="text-sm text-gray-500">状态筛选：</span>
                 <Select

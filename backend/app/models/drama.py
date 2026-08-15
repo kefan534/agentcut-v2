@@ -1,3 +1,4 @@
+# Based on Toonflow by HBAI-Ltd, licensed under Apache-2.0 + Supplemental License.
 """Short-drama (Toonflow) data models.
 
 These tables port Toonflow's SQLite schema (``o_*`` tables) into AgentCut's
@@ -196,4 +197,23 @@ class DramaVideo(Base):
 
     __table_args__ = (
         Index("ix_drama_video_project_updated", "project_id", "updated_at"),
+    )
+
+
+class DramaArtStyle(Base):
+    """Port of Toonflow ``o_artStyle`` (art-style preset for reuse across projects/assets)."""
+
+    __tablename__ = "drama_art_style"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False)
+    prompt = Column(Text, nullable=True)   # 画风描述（用于生成 prompt）
+    image_url = Column(Text, nullable=True)  # 示例图
+
+    is_deleted = Column(String(1), nullable=False, default="N")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )

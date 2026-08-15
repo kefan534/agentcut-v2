@@ -1,3 +1,4 @@
+import asyncio
 import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,7 +63,7 @@ os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 
 @app.on_event("startup")
-def _init_schema() -> None:
+async def _init_schema() -> None:
     """Lightweight schema bootstrap.
 
     Creates any missing tables (for P0 additions like `agent_audit_logs` and
@@ -76,6 +77,33 @@ def _init_schema() -> None:
     except Exception as exc:  # pragma: no cover
         import logging
         logging.getLogger(__name__).warning("create_all failed: %s", exc)
+
+    # P1: 恢复进程重启前未完成的视频生成任务（asyncio.create_task 易失，重启后继续）。
+    await _recover_pending_video_jobs()
+
+
+async def _recover_pending_video_jobs() -> None:
+    """Scan ``drama_video`` rows stuck in '生成中' and resume their generation."""
+    import logging
+    from app.db.session import SessionLocal
+    from app.models.drama import DramaVideo
+    from app.api.drama.router import _run_video_generation
+
+    log = logging.getLogger(__name__)
+    db = SessionLocal()
+    try:
+        pending = db.query(DramaVideo).filter(
+            DramaVideo.state == "生成中",
+            DramaVideo.is_deleted == "N",
+        ).all()
+        for v in pending:
+            asyncio.create_task(_run_video_generation(str(v.id), str(v.user_id)))
+        if pending:
+            log.info("recovered %d pending video job(s)", len(pending))
+    except Exception as exc:  # pragma: no cover
+        log.warning("recover pending video jobs failed: %s", exc)
+    finally:
+        db.close()
 
 
 @app.exception_handler(Exception)

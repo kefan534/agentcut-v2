@@ -65,6 +65,18 @@ export function DramaSidebar() {
                     ))}
                 </div>
             ))}
+            <div className="mt-auto px-2 pt-4 text-[11px] leading-relaxed text-muted-foreground/70">
+                Powered by{" "}
+                <a
+                    href="https://github.com/HBAI-Ltd/Toonflow-app"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                >
+                    Toonflow
+                </a>
+                <div className="mt-0.5">Apache-2.0 + Supplemental License</div>
+            </div>
         </aside>
     );
 }

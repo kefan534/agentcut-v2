@@ -1,3 +1,4 @@
+# Based on Toonflow by HBAI-Ltd, licensed under Apache-2.0 + Supplemental License.
 """Pydantic schemas for the short-drama (Toonflow) module."""
 from datetime import datetime
 from typing import Optional, List
@@ -229,6 +230,35 @@ class DramaVideoOut(BaseModel):
     model: Optional[str]
     state: str
     error_reason: Optional[str]
+    is_deleted: str
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# --- Art style (画风) ---
+
+
+class DramaArtStyleCreate(BaseModel):
+    name: str
+    prompt: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+class DramaArtStyleUpdate(BaseModel):
+    name: Optional[str] = None
+    prompt: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+class DramaArtStyleOut(BaseModel):
+    id: UUID
+    user_id: UUID
+    name: str
+    prompt: Optional[str]
+    image_url: Optional[str]
     is_deleted: str
     created_at: datetime
     updated_at: datetime

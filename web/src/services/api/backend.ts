@@ -579,6 +579,62 @@ export async function deleteDramaVideo(id: string) {
     await backend.delete(`/drama/videos/${id}`);
 }
 
+// Drama task board (任务看板聚合)
+export type DramaTaskSummary = {
+    project_id: string;
+    scripts: { total: number; with_content: number };
+    assets: { total: number; done: number; failed: number };
+    storyboards: { total: number; done: number };
+    videos: { total: number; success: number; failed: number };
+};
+
+export async function getDramaTasksSummary(projectId: string) {
+    const { data } = await backend.get<DramaTaskSummary>("/drama/tasks/summary", { params: { project_id: projectId } });
+    return data;
+}
+
+// Drama art style (画风)
+export type DramaArtStyle = {
+    id: string;
+    user_id: string;
+    name: string;
+    prompt: string | null;
+    image_url: string | null;
+    is_deleted: string;
+    created_at: string;
+    updated_at: string;
+};
+
+export async function listDramaArtStyles() {
+    const { data } = await backend.get<DramaArtStyle[]>("/drama/art-styles");
+    return data;
+}
+
+export async function createDramaArtStyle(payload: { name: string; prompt?: string; image_url?: string }) {
+    const { data } = await backend.post<DramaArtStyle>("/drama/art-styles", payload);
+    return data;
+}
+
+export async function updateDramaArtStyle(id: string, payload: { name?: string; prompt?: string; image_url?: string }) {
+    const { data } = await backend.put<DramaArtStyle>(`/drama/art-styles/${id}`, payload);
+    return data;
+}
+
+export async function deleteDramaArtStyle(id: string) {
+    await backend.delete(`/drama/art-styles/${id}`);
+}
+
+// Drama models (模型与部署)
+export type DramaModels = {
+    ok: boolean;
+    models: Record<"text" | "image" | "video" | "audio", { variable_name: string; vendor: string; model_version: string }[]>;
+};
+
+export async function getDramaModels() {
+    const { data } = await backend.get<DramaModels>("/drama/models");
+    return data;
+}
+
 // Assets
 export type BackendAsset = {
     id: string;

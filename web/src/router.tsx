@@ -26,13 +26,10 @@ import DramaScriptPage from "@/pages/drama/drama-script";
 import DramaNovelPage from "@/pages/drama/drama-novel";
 import DramaAssetsPage from "@/pages/drama/drama-assets";
 import DramaStoryboardPage from "@/pages/drama/drama-storyboard";
-import {
-    DramaTasksPage,
-    DramaScriptAgentPage,
-    DramaArtStylePage,
-    DramaAudioPage,
-    DramaSettingsPage,
-} from "@/pages/drama/drama-module";
+import DramaTasksPage from "@/pages/drama/drama-tasks";
+import DramaArtStylePage from "@/pages/drama/drama-art-style";
+import DramaSettingsPage from "@/pages/drama/drama-settings";
+import { DramaScriptAgentPage, DramaAudioPage } from "@/pages/drama/drama-module";
 import { useUserStore } from "@/stores/use-user-store";
 
 function RequireAuth({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {

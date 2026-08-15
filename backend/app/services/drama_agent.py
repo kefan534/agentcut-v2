@@ -1,3 +1,4 @@
+# Based on Toonflow by HBAI-Ltd, licensed under Apache-2.0 + Supplemental License.
 """Short-drama script agent (P3) — screenwriter role tools + executor.
 
 Reuses the P0.5 process-local loop (``run_local_agent``) with a screenwriter

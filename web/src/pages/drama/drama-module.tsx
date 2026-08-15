@@ -24,14 +24,6 @@ function EmptyState({ hint }: { hint: string }) {
     );
 }
 
-export function DramaTasksPage() {
-    return (
-        <ModuleShell title="任务看板" description="查看生成与合成任务的实时进度。">
-            <EmptyState hint="暂无进行中的任务" />
-        </ModuleShell>
-    );
-}
-
 export function DramaScriptAgentPage() {
     return (
         <ModuleShell title="剧本智能体" description="用 Agent 辅助扩写、润色与拆解剧本。">
@@ -40,26 +32,10 @@ export function DramaScriptAgentPage() {
     );
 }
 
-export function DramaArtStylePage() {
-    return (
-        <ModuleShell title="画风" description="管理并复用统一的视觉画风预设。">
-            <EmptyState hint="暂无画风预设" />
-        </ModuleShell>
-    );
-}
-
 export function DramaAudioPage() {
     return (
         <ModuleShell title="配音配乐" description="为对白与场景生成配音与背景音乐。">
             <EmptyState hint="暂无音频资产" />
-        </ModuleShell>
-    );
-}
-
-export function DramaSettingsPage() {
-    return (
-        <ModuleShell title="模型与部署" description="配置短剧工坊使用的模型供应商与 Agent 部署。">
-            <EmptyState hint="在 AgentCut 模型路由中统一管理" />
         </ModuleShell>
     );
 }

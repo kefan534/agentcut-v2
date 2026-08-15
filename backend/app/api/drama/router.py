@@ -1,3 +1,4 @@
+# Based on Toonflow by HBAI-Ltd, licensed under Apache-2.0 + Supplemental License.
 """Short-drama (Toonflow) API router.
 
 P1: project CRUD. P3: script CRUD. P4: novel (chapter) CRUD + event extraction.
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.models.drama import DramaProject, DramaNovel, DramaScript, DramaAsset, DramaStoryboard, DramaVideo
+from app.models.drama import DramaProject, DramaNovel, DramaScript, DramaAsset, DramaStoryboard, DramaVideo, DramaArtStyle
 from app.services.drama_agent import extract_novel_events, generate_storyboards_from_script
 from app.schemas.drama import (
     DramaProjectCreate,
@@ -37,6 +38,9 @@ from app.schemas.drama import (
     DramaStoryboardOut,
     DramaVideoCreate,
     DramaVideoOut,
+    DramaArtStyleCreate,
+    DramaArtStyleUpdate,
+    DramaArtStyleOut,
 )
 
 router = APIRouter(prefix="/drama", tags=["drama"])
@@ -50,6 +54,11 @@ class _ExtractEventsBody(BaseModel):
 class _GenerateStoryboardsBody(BaseModel):
     project_id: UUID
     script_id: UUID
+
+
+class _ComposeVideosBody(BaseModel):
+    project_id: UUID
+    video_ids: List[UUID] = Field(default_factory=list)  # 按此顺序合成
 
 
 def _get_owned_project(project_id: UUID, user_id: UUID, db: Session) -> DramaProject:
@@ -152,6 +161,48 @@ def delete_drama_project(
     project.is_deleted = "Y"
     db.commit()
     return {"detail": "Drama project deleted"}
+
+
+# --- Task board (任务看板，聚合视图) ---
+
+
+@router.get("/tasks/summary")
+def get_drama_tasks_summary(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """聚合项目各模块的生成进度（任务看板）。"""
+    _get_owned_project(project_id, current_user.id, db)
+
+    def _count(model, extra: Optional[dict] = None):
+        q = db.query(model).filter(
+            model.user_id == current_user.id,
+            model.project_id == project_id,
+            model.is_deleted == "N",
+        )
+        if extra:
+            q = q.filter(*extra)
+        return q.count()
+
+    scripts_total = _count(DramaScript)
+    scripts_extracted = _count(DramaScript, [DramaScript.content.isnot(None)])
+    assets_total = _count(DramaAsset)
+    assets_done = _count(DramaAsset, [DramaAsset.image_state == "已完成"])
+    assets_failed = _count(DramaAsset, [DramaAsset.image_state == "生成失败"])
+    storyboards_total = _count(DramaStoryboard)
+    storyboards_done = _count(DramaStoryboard, [DramaStoryboard.image_state == "已完成"])
+    videos_total = _count(DramaVideo)
+    videos_success = _count(DramaVideo, [DramaVideo.state == "成功"])
+    videos_failed = _count(DramaVideo, [DramaVideo.state == "失败"])
+
+    return {
+        "project_id": project_id,
+        "scripts": {"total": scripts_total, "with_content": scripts_extracted},
+        "assets": {"total": assets_total, "done": assets_done, "failed": assets_failed},
+        "storyboards": {"total": storyboards_total, "done": storyboards_done},
+        "videos": {"total": videos_total, "success": videos_success, "failed": videos_failed},
+    }
 
 
 # --- Novels (小说原文) ---
@@ -501,10 +552,14 @@ async def generate_drama_asset(
     db.commit()
 
     prompt = _build_asset_prompt(asset, project)
-    body = {"prompt": prompt, "size": payload.size, "n": 1}
+    # 图像生成统一走 /images/generations（OpenAI 兼容 + flux-art 均支持），
+    # model 显式传真实上游模型名（source.model_version）。
+    body = {"model": source.model_version, "prompt": prompt, "size": payload.size, "n": 1}
 
     try:
-        result = await call_upstream(source, body, user_id=str(current_user.id))
+        result = await call_upstream(
+            source, body, endpoint_override="/images/generations", user_id=str(current_user.id)
+        )
         urls = await _save_generated_media(result, current_user, "image")
         if urls:
             asset.image_url = urls[0]
@@ -645,10 +700,12 @@ async def generate_storyboard_image(
     db.commit()
 
     prompt = sb.prompt or f"{project.art_style or ''} 分镜画面：{sb.video_desc or ''}"
-    body = {"prompt": prompt, "size": payload.size, "n": 1}
+    body = {"model": source.model_version, "prompt": prompt, "size": payload.size, "n": 1}
 
     try:
-        result = await call_upstream(source, body, user_id=str(current_user.id))
+        result = await call_upstream(
+            source, body, endpoint_override="/images/generations", user_id=str(current_user.id)
+        )
         urls = await _save_generated_media(result, current_user, "image")
         if urls:
             sb.image_url = urls[0]
@@ -713,7 +770,7 @@ async def create_drama_video(
 async def _run_video_generation(video_id: str, user_id: str) -> None:
     """后台生成视频：调视频模型，写回 video_url/state。"""
     from app.services.model_service import resolve_source_for_variable
-    from app.services.gateway_service import call_upstream
+    from app.services.gateway_service import call_upstream, _is_fluxart_source
     from app.api.gateway.router import _save_generated_media
 
     db = next(get_db())
@@ -736,11 +793,18 @@ async def _run_video_generation(video_id: str, user_id: str) -> None:
             if sb and sb.image_url:
                 reference_urls = [sb.image_url]
 
-        body = {"prompt": video.prompt or "", "duration": video.duration, "n": 1}
+        body = {
+            "model": source.model_version,
+            "prompt": video.prompt or "",
+            "duration": video.duration,
+            "video_mode": "i2v_first" if reference_urls else "t2v",
+        }
         if reference_urls:
             body["image_urls"] = reference_urls
 
-        result = await call_upstream(source, body, user_id=user_id)
+        # flux-art（Grok）走 /videos/generations + 轮询；其余模型走各自适配器。
+        endpoint = "/videos/generations" if _is_fluxart_source(source) else None
+        result = await call_upstream(source, body, endpoint_override=endpoint, user_id=user_id)
         urls = await _save_generated_media(result, user, "video")
         if urls:
             video.video_url = urls[0]
@@ -775,4 +839,187 @@ def delete_drama_video(
     return {"detail": "Video deleted"}
 
 
+@router.post("/videos/compose", response_model=DramaVideoOut)
+async def compose_drama_videos(
+    payload: _ComposeVideosBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """把多个视频片段按顺序合成成片（P1，服务端 ffmpeg）。"""
+    _get_owned_project(payload.project_id, current_user.id, db)
+    if not payload.video_ids:
+        raise HTTPException(status_code=400, detail="video_ids 不能为空")
+
+    # 按传入顺序取视频（校验归属）
+    videos = []
+    for vid in payload.video_ids:
+        v = db.query(DramaVideo).filter(
+            DramaVideo.id == vid,
+            DramaVideo.user_id == current_user.id,
+            DramaVideo.project_id == payload.project_id,
+            DramaVideo.is_deleted == "N",
+        ).first()
+        if not v:
+            raise HTTPException(status_code=404, detail=f"视频不存在：{vid}")
+        if not v.video_url:
+            raise HTTPException(status_code=400, detail=f"视频尚未生成完成：{v.id}")
+        videos.append(v)
+
+    from app.services.media_service import compose_videos
+    from app.services import cos_service
+    from app.core.config import settings
+    from pathlib import Path
+    import uuid as _uuid
+
+    composed_bytes = await compose_videos([v.video_url for v in videos])
+
+    # 上传成片（COS 优先，本地 fallback）
+    if cos_service.is_configured():
+        key = cos_service.upload_bytes(
+            composed_bytes, prefix="generated", user_id=current_user.id,
+            content_type="video/mp4", ext="mp4",
+        )
+        composed_url = cos_service.get_presigned_url(key, expires_in=86400 * 7)
+    else:
+        user_dir = Path(settings.UPLOAD_DIR) / str(current_user.id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{_uuid.uuid4().hex}.mp4"
+        (user_dir / fname).write_bytes(composed_bytes)
+        composed_url = f"/api/v1/upload/{current_user.id}/{fname}"
+
+    # 写回成片记录
+    composed = DramaVideo(
+        user_id=current_user.id,
+        project_id=payload.project_id,
+        script_id=videos[0].script_id,
+        prompt=f"合成成片（{len(videos)} 个片段）",
+        video_url=composed_url,
+        duration=sum(v.duration or 0 for v in videos),
+        model="ffmpeg-compose",
+        state="成功",
+    )
+    db.add(composed)
+    db.commit()
+    db.refresh(composed)
+    return composed
+
+
 # --- Storyboard / Video end ---
+
+
+# --- Art style (画风) ---
+
+
+@router.get("/art-styles", response_model=List[DramaArtStyleOut])
+def list_drama_art_styles(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return (
+        db.query(DramaArtStyle)
+        .filter(
+            DramaArtStyle.user_id == current_user.id,
+            DramaArtStyle.is_deleted == "N",
+        )
+        .order_by(DramaArtStyle.created_at.desc())
+        .all()
+    )
+
+
+@router.post("/art-styles", response_model=DramaArtStyleOut)
+def create_drama_art_style(
+    payload: DramaArtStyleCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    style = DramaArtStyle(user_id=current_user.id, **payload.model_dump())
+    db.add(style)
+    db.commit()
+    db.refresh(style)
+    return style
+
+
+@router.put("/art-styles/{style_id}", response_model=DramaArtStyleOut)
+def update_drama_art_style(
+    style_id: UUID,
+    payload: DramaArtStyleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    style = db.query(DramaArtStyle).filter(
+        DramaArtStyle.id == style_id,
+        DramaArtStyle.user_id == current_user.id,
+        DramaArtStyle.is_deleted == "N",
+    ).first()
+    if not style:
+        raise HTTPException(status_code=404, detail="Art style not found")
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(style, field, value)
+
+    db.commit()
+    db.refresh(style)
+    return style
+
+
+@router.delete("/art-styles/{style_id}")
+def delete_drama_art_style(
+    style_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    style = db.query(DramaArtStyle).filter(
+        DramaArtStyle.id == style_id,
+        DramaArtStyle.user_id == current_user.id,
+        DramaArtStyle.is_deleted == "N",
+    ).first()
+    if not style:
+        raise HTTPException(status_code=404, detail="Art style not found")
+
+    style.is_deleted = "Y"
+    db.commit()
+    return {"detail": "Art style deleted"}
+
+
+# --- Models (模型与部署设置页) ---
+
+
+@router.get("/models")
+def get_drama_models(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """聚合可用模型按模态分组（设置页展示），复用 AgentCut 模型路由。"""
+    from app.models.model import VariableMapping
+    from app.services.model_service import resolve_source_for_variable, first_active_source_by_category
+
+    groups: dict = {"text": [], "image": [], "video": [], "audio": []}
+    seen = set()
+    for m in db.query(VariableMapping).filter(VariableMapping.modal_category.in_(groups.keys())).all():
+        if m.variable_name in seen:
+            continue
+        source = resolve_source_for_variable(db, m.variable_name, current_user)
+        if not source:
+            continue
+        seen.add(m.variable_name)
+        groups.setdefault(m.modal_category, []).append({
+            "variable_name": m.variable_name,
+            "vendor": source.vendor,
+            "model_version": source.model_version,
+        })
+
+    # 兜底：直接按模态取活跃源
+    for cat in ("text", "image", "video", "audio"):
+        if not groups.get(cat):
+            source = first_active_source_by_category(db, cat, current_user)
+            if source:
+                groups[cat].append({
+                    "variable_name": source.model_version,
+                    "vendor": source.vendor,
+                    "model_version": source.model_version,
+                })
+
+    return {"ok": True, "models": groups}
+
+
+# --- Art style / Models end ---

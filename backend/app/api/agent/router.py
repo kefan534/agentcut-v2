@@ -394,6 +394,10 @@ async def agent_turn(
     if pre_prompt_parts:
         final_prompt = "\n\n".join(pre_prompt_parts) + "\n\n" + final_prompt
 
+    # 读通用 Agent 配置（db 关闭前）
+    from app.services.agent_config_service import get_agent_config
+    global_cfg = get_agent_config(db, "global")
+
     db.close()
 
     # Persist the user message immediately so history always shows the turn,
@@ -405,8 +409,12 @@ async def agent_turn(
     if payload.scope == "script_agent" and payload.projectId:
         system_prompt, tools, execute_fn = make_script_agent(payload.projectId)
     else:
-        system_prompt = LOCAL_AGENT_SYSTEM_PROMPT
-        tools = BUILTIN_TOOLS + build_skill_tools(user_id)
+        system_prompt = global_cfg["system_prompt"]
+        tools = BUILTIN_TOOLS
+        enabled = global_cfg.get("enabled_tools")
+        if enabled:
+            tools = [t for t in BUILTIN_TOOLS if t["function"]["name"] in enabled]
+        tools = tools + build_skill_tools(user_id)
         execute_fn = None
     messages = _build_openai_messages(user_id, thread_id, final_prompt, system_prompt)
     asyncio.create_task(_run_local_agent_task(user_id, thread_id, conversation_id, messages, tools, execute_fn))

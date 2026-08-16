@@ -774,6 +774,25 @@ export async function adminDeleteVariable(id: number) {
     await backend.delete(`/admin/variables/${id}`);
 }
 
+// Agent config (通用 Agent + 短剧工坊智能体)
+export type AgentConfigScope = {
+    system_prompt: string | null;
+    model_variable: string | null;
+    enabled_tools: string[] | null;
+    max_steps: number | null;
+    tool_timeout_sec: number | null;
+};
+
+export async function adminGetAgentConfig() {
+    const { data } = await backend.get<{ ok: boolean; scopes: Record<string, AgentConfigScope> }>("/admin/agent-config");
+    return data;
+}
+
+export async function adminUpdateAgentConfig(scope: string, payload: Partial<AgentConfigScope>) {
+    const { data } = await backend.put<{ ok: boolean; config: AgentConfigScope }>(`/admin/agent-config/${scope}`, payload);
+    return data;
+}
+
 export async function adminListUsers(q?: string) {
     const { data } = await backend.get<BackendUser[]>("/admin/users", { params: { q } });
     return data;

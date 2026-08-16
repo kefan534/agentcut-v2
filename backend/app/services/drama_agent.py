@@ -29,6 +29,14 @@ def make_script_agent(project_id: str) -> Tuple[str, List[Dict[str, Any]], Calla
     ``project_id`` is captured in the executor closure (never exposed to the
     LLM as a tool parameter), so all reads/writes are scoped to one project.
     """
+    # 读短剧编剧 Agent 配置（system_prompt 可后台配置，默认值兜底）
+    from app.services.agent_config_service import get_agent_config
+    db_cfg = next(get_db())
+    try:
+        cfg = get_agent_config(db_cfg, "script_agent")
+    finally:
+        db_cfg.close()
+
     tools: List[Dict[str, Any]] = [
         {
             "type": "function",
@@ -194,7 +202,7 @@ def make_script_agent(project_id: str) -> Tuple[str, List[Dict[str, Any]], Calla
 
         return {"error": f"unknown tool: {name}"}
 
-    return DRAMA_SCRIPT_AGENT_SYSTEM_PROMPT, tools, execute
+    return cfg["system_prompt"], tools, execute
 
 
 # ---------------------------------------------------------------------------

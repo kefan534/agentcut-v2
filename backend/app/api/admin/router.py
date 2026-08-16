@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 import os
 import json
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +23,8 @@ from app.schemas.model import (
 from app.schemas.log import CallLogOut
 from app.services.credit_service import add_credits, deduct_credits
 from app.services.plugin_service import execute_plugin
+from app.models.agent_config import AgentConfig
+from app.services.agent_config_service import get_agent_config, DEFAULT_AGENT_CONFIGS, AGENT_SCOPES
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -319,6 +322,48 @@ async def update_ima_config(request: Request, admin: User = Depends(require_admi
     except Exception:
         pass  # 不阻断响应
     return {"ok": True, "configured": bool(settings.IMA_API_KEY)}
+
+
+# ── Agent 配置（通用 Agent + 短剧工坊智能体）────────────────────
+
+class _AgentConfigBody(BaseModel):
+    system_prompt: Optional[str] = None
+    model_variable: Optional[str] = None
+    enabled_tools: Optional[List[str]] = None
+    max_steps: Optional[int] = None
+    tool_timeout_sec: Optional[int] = None
+
+
+@router.get("/agent-config")
+def get_agent_configs(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """返回所有 scope 的 Agent 配置（含默认值兜底）。"""
+    return {
+        "ok": True,
+        "scopes": {scope: get_agent_config(db, scope) for scope in AGENT_SCOPES},
+    }
+
+
+@router.put("/agent-config/{scope}")
+def update_agent_config(
+    scope: str,
+    payload: _AgentConfigBody,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if scope not in AGENT_SCOPES:
+        raise HTTPException(status_code=404, detail=f"未知 scope：{scope}")
+
+    row = db.query(AgentConfig).filter(AgentConfig.scope == scope).first()
+    if not row:
+        row = AgentConfig(scope=scope)
+        db.add(row)
+
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(row, field, value)
+
+    db.commit()
+    return {"ok": True, "scope": scope, "config": get_agent_config(db, scope)}
 
 
 # P0: model_pricing admin API（独立 router）

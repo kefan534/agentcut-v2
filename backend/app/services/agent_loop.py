@@ -297,6 +297,10 @@ async def run_local_agent(
     try:
         user = db.query(User).filter(User.id == UUID(user_id)).first()
         source = _resolve_text_source(db, user)
+        from app.services.agent_config_service import get_agent_config
+        cfg = get_agent_config(db, "global")
+        max_steps = int(cfg.get("max_steps") or MAX_TOOL_STEPS)
+        tool_timeout = int(cfg.get("tool_timeout_sec") or TOOL_TIMEOUT_SECONDS)
     finally:
         db.close()
 
@@ -310,7 +314,7 @@ async def run_local_agent(
     assistant_text = ""
 
     try:
-        for _step in range(MAX_TOOL_STEPS):
+        for _step in range(max_steps):
             body: Dict[str, Any] = {"model": model, "messages": messages}
             if tools:
                 body["tools"] = tools
@@ -364,7 +368,7 @@ async def run_local_agent(
                     async with _get_tool_semaphore():
                         result = await asyncio.wait_for(
                             asyncio.to_thread(executor, user_id, tool_name, tool_args),
-                            timeout=TOOL_TIMEOUT_SECONDS,
+                            timeout=tool_timeout,
                         )
                 except asyncio.TimeoutError:
                     result = {"error": f"工具 {tool_name} 执行超时（>{TOOL_TIMEOUT_SECONDS}s）"}

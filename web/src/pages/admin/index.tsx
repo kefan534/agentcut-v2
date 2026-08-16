@@ -8,6 +8,7 @@ import { AppConfigPanel } from "@/components/layout/app-config-modal";
 import AdminSkillReview from "@/pages/admin-skill-review";
 import AdminModelPricing from "@/pages/admin-model-pricing";
 import AdminAuditLogs from "@/pages/admin-audit-logs";
+import { AdminAgentConfig } from "@/pages/admin/admin-agent-config";
 import {
     adminListModels,
     adminCreateModel,
@@ -72,6 +73,7 @@ export default function AdminPage() {
     const items = useMemo(() => [
         { key: "models", label: "模型管理", children: <ModelsTab /> },
         { key: "variables", label: "变量映射", children: <VariablesTab /> },
+        { key: "agentConfig", label: "Agent 配置", children: <AdminAgentConfig /> },
         { key: "users", label: "用户管理", children: <UsersTab /> },
         { key: "logs", label: "调用日志", children: <LogsTab /> },
         { key: "skills", label: "Skill 审核", children: <AdminSkillReview /> },

@@ -706,6 +706,9 @@ export type AdminApiSource = {
     allowed_user_levels: string[];
     extra_headers: Record<string, string> | null;
     extra_body: Record<string, unknown> | null;
+    balance_remaining: number | null;
+    balance_type: string;
+    balance_updated_at: string | null;
     created_at: string;
     updated_at: string;
 };

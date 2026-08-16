@@ -92,6 +92,7 @@ export default function AdminModels() {
             modal_category: "text", priority: 100, timeout_ms: 30000, retry_count: 2,
             is_active: true, cost_level: "medium", quality_level: "medium",
             allowed_user_levels: ["free", "paid", "vip", "admin"], endpoint_path: "/v1/chat/completions",
+            balance_type: "credits",
         });
         setModalOpen(true);
     };
@@ -143,6 +144,15 @@ export default function AdminModels() {
             },
         },
         { title: "平均耗时", key: "latency", render: (_, r) => (stats[r.id] ? `${stats[r.id].avg_latency_ms}ms` : "-") },
+        {
+            title: "上游余额",
+            key: "balance",
+            render: (_, r) => {
+                if (r.balance_remaining == null) return <span className="text-stone-400">未设置</span>;
+                const unit = r.balance_type === "money" ? "¥" : " 积分";
+                return <span>{unit}{r.balance_remaining}</span>;
+            },
+        },
         { title: "启用", dataIndex: "is_active", key: "is_active", render: (v) => <Switch checked={v} disabled size="small" /> },
         {
             title: "操作",
@@ -213,6 +223,14 @@ export default function AdminModels() {
                     <Form.Item name="extra_body" label="额外 Body (JSON)">
                         <Input.TextArea rows={2} placeholder='{"temperature":0.7}' />
                     </Form.Item>
+                    <div className="grid grid-cols-2 gap-3">
+                        <Form.Item name="balance_type" label="余额类型">
+                            <Select options={[{ value: "credits", label: "积分" }, { value: "money", label: "金额" }]} />
+                        </Form.Item>
+                        <Form.Item name="balance_remaining" label="上游余额">
+                            <InputNumber className="w-full" min={0} precision={2} placeholder="剩余余额" />
+                        </Form.Item>
+                    </div>
                     <Form.Item name="is_active" valuePropName="checked" label={null}>
                         <Switch checkedChildren="启用" unCheckedChildren="禁用" />
                     </Form.Item>

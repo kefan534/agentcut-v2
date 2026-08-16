@@ -21,6 +21,8 @@ class ApiSourceBase(BaseModel):
     allowed_user_levels: List[str] = ["free", "paid", "vip"]
     extra_headers: Optional[Dict[str, Any]] = {}
     extra_body: Optional[Dict[str, Any]] = {}
+    balance_remaining: Optional[float] = None  # 上游账户剩余余额
+    balance_type: str = "credits"  # credits 积分 | money 金额
 
 
 class ApiSourceCreate(ApiSourceBase):
@@ -44,6 +46,8 @@ class ApiSourceUpdate(BaseModel):
     allowed_user_levels: Optional[List[str]] = None
     extra_headers: Optional[Dict[str, Any]] = None
     extra_body: Optional[Dict[str, Any]] = None
+    balance_remaining: Optional[float] = None
+    balance_type: Optional[str] = None
 
 
 class ApiSourceOut(BaseModel):
@@ -63,6 +67,9 @@ class ApiSourceOut(BaseModel):
     allowed_user_levels: List[str]
     extra_headers: Optional[Dict[str, Any]]
     extra_body: Optional[Dict[str, Any]]
+    balance_remaining: Optional[float]
+    balance_type: str
+    balance_updated_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
 

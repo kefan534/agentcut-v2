@@ -46,6 +46,9 @@ def create_source(payload: ApiSourceCreate, db: Session = Depends(get_db), admin
     if not api_key:
         raise HTTPException(status_code=400, detail="api_key_plain is required")
     data["api_key_encrypted"] = encrypt_api_key(api_key)
+    if data.get("balance_remaining") is not None:
+        from datetime import datetime
+        data["balance_updated_at"] = datetime.utcnow()
     source = ApiSource(**data)
     db.add(source)
     db.commit()
@@ -74,6 +77,9 @@ def update_source(
 
     for k, v in data.items():
         setattr(source, k, v)
+    if "balance_remaining" in data and data["balance_remaining"] is not None:
+        from datetime import datetime
+        source.balance_updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(source)

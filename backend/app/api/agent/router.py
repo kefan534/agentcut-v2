@@ -406,7 +406,8 @@ async def agent_turn(
 
     # Build OpenAI messages + tools based on scope, then run the process-local
     # agent loop in the background. Events are pushed to the user's SSE queues.
-    if payload.scope == "script_agent" and payload.projectId:
+    agent_scope = "script_agent" if (payload.scope == "script_agent" and payload.projectId) else "global"
+    if agent_scope == "script_agent":
         system_prompt, tools, execute_fn = make_script_agent(payload.projectId)
     else:
         system_prompt = global_cfg["system_prompt"]
@@ -417,7 +418,7 @@ async def agent_turn(
         tools = tools + build_skill_tools(user_id)
         execute_fn = None
     messages = _build_openai_messages(user_id, thread_id, final_prompt, system_prompt)
-    asyncio.create_task(_run_local_agent_task(user_id, thread_id, conversation_id, messages, tools, execute_fn))
+    asyncio.create_task(_run_local_agent_task(user_id, thread_id, conversation_id, messages, tools, execute_fn, agent_scope))
 
     return {
         "ok": True,
@@ -447,6 +448,7 @@ async def _run_local_agent_task(
     messages: List[Dict[str, Any]],
     tools: List[Dict[str, Any]],
     execute_fn=None,
+    scope: str = "global",
 ) -> None:
     """Run the local agent loop and persist the assistant reply to history."""
     stream_id = f"{conversation_id}:msg"
@@ -454,7 +456,7 @@ async def _run_local_agent_task(
     def emit(event_name: str, payload: Dict[str, Any]) -> None:
         _enqueue(user_id, event_name, payload)
 
-    text = await run_local_agent(user_id, thread_id, messages, tools, emit, stream_id, execute_fn)
+    text = await run_local_agent(user_id, thread_id, messages, tools, emit, stream_id, execute_fn, scope)
     if text:
         _add_assistant_message(user_id, thread_id, text)
 

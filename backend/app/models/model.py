@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, Text, ForeignKey, ARRAY, JSON
+from sqlalchemy import Column, String, DateTime, Integer, Boolean, Text, ForeignKey, ARRAY, JSON, Numeric
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.session import Base
 
@@ -28,6 +28,11 @@ class ApiSource(Base):
 
     extra_headers = Column(JSON, nullable=True, default={})
     extra_body = Column(JSON, nullable=True, default={})
+
+    # 上游账户余额（手动维护）
+    balance_remaining = Column(Numeric(18, 4), nullable=True)  # 剩余余额（金额或积分）
+    balance_type = Column(String(16), nullable=False, default="credits")  # credits 积分 | money 金额
+    balance_updated_at = Column(DateTime(timezone=True), nullable=True)
 
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

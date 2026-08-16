@@ -2,17 +2,20 @@ import { Activity, Coins, Users, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { App, Card, Progress, Spin, Tag } from "antd";
 
-import { adminGetDashboard, getBackendErrorMessage, type AdminDashboard } from "@/services/api/backend";
+import { adminGetDashboard, adminListModels, getBackendErrorMessage, type AdminApiSource, type AdminDashboard } from "@/services/api/backend";
 
 export default function AdminDashboard() {
     const { message } = App.useApp();
     const [data, setData] = useState<AdminDashboard | null>(null);
+    const [models, setModels] = useState<AdminApiSource[]>([]);
     const [loading, setLoading] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            setData(await adminGetDashboard());
+            const [d, m] = await Promise.all([adminGetDashboard(), adminListModels()]);
+            setData(d);
+            setModels(m);
         } catch (e) {
             message.error(getBackendErrorMessage(e, "加载仪表盘失败"));
         } finally {
@@ -96,6 +99,34 @@ export default function AdminDashboard() {
                     )}
                 </Card>
             </div>
+
+            <Card title="上游模型余额" extra={<Tag color="orange">低余额请及时充值</Tag>}>
+                {models.length === 0 ? (
+                    <p className="py-4 text-center text-sm text-stone-400">暂无模型</p>
+                ) : (
+                    <ul className="flex flex-col gap-2">
+                        {models.map((m) => {
+                            const low = m.balance_remaining != null && m.balance_remaining < 10;
+                            const unit = m.balance_type === "money" ? "¥" : " 积分";
+                            return (
+                                <li key={m.id} className="flex items-center justify-between rounded-md border border-stone-100 px-3 py-2 text-sm dark:border-stone-800">
+                                    <span className="text-stone-700 dark:text-stone-300">
+                                        {m.vendor}/{m.model_version}
+                                        <span className="ml-2 text-xs text-stone-400">({m.source_name})</span>
+                                    </span>
+                                    {m.balance_remaining == null ? (
+                                        <Tag>未设置</Tag>
+                                    ) : (
+                                        <Tag color={low ? "red" : m.balance_remaining < 50 ? "orange" : "green"}>
+                                            {unit}{m.balance_remaining}
+                                        </Tag>
+                                    )}
+                                </li>
+                            );
+                        })}
+                    </ul>
+                )}
+            </Card>
 
             <Card title="系统状态">
                 <div className="flex items-center gap-2 text-sm text-stone-600 dark:text-stone-300">

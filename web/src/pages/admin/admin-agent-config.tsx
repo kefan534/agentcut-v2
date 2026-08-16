@@ -5,6 +5,7 @@ import { App, Button, Form, Input, InputNumber, Select, Spin, Tabs, Tag } from "
 import {
     adminGetAgentConfig,
     adminUpdateAgentConfig,
+    adminListVariables,
     getBackendErrorMessage,
     type AgentConfigScope,
 } from "@/services/api/backend";
@@ -38,12 +39,15 @@ function ScopeForm({ scope }: { scope: string }) {
     const [form] = Form.useForm();
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [textVariables, setTextVariables] = useState<string[]>([]);
     const meta = TOOL_OPTIONS[scope];
 
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const data = await adminGetAgentConfig();
+            const [data, vars] = await Promise.all([adminGetAgentConfig(), adminListVariables()]);
+            // 下拉选项来自「变量映射」里 text 类的变量名
+            setTextVariables(vars.filter((v) => v.modal_category === "text").map((v) => v.variable_name));
             const cfg = data.scopes[scope];
             if (cfg) {
                 form.setFieldsValue({
@@ -98,8 +102,16 @@ function ScopeForm({ scope }: { scope: string }) {
                 <Input.TextArea rows={6} placeholder="定义 Agent 的角色、能力与回答风格…" />
             </Form.Item>
 
-            <Form.Item name="model_variable" label="文本模型（变量名）" tooltip="留空则使用默认文本模型（TEXT_MODEL）">
-                <Input placeholder="例如 DeepSeek（留空=默认）" allowClear />
+            <Form.Item
+                name="model_variable"
+                label="文本模型（变量名）"
+                tooltip="从「变量映射」中 text 类的变量名里选择；留空则使用默认文本模型"
+            >
+                <Select
+                    allowClear
+                    placeholder="留空 = 默认文本模型"
+                    options={textVariables.map((v) => ({ value: v, label: v }))}
+                />
             </Form.Item>
 
             <Form.Item name="enabled_tools" label="启用的工具" tooltip="勾选 Agent 可调用的工具">

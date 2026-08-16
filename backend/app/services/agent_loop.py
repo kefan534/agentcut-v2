@@ -286,19 +286,27 @@ async def run_local_agent(
     emit: Callable[[str, Dict[str, Any]], None],
     stream_id: str,
     execute_fn: Optional[Callable[[str, str, Dict[str, Any]], Dict[str, Any]]] = None,
+    scope: str = "global",
 ) -> str:
     """Run the tool-calling loop against the gateway. Returns the final text.
 
     ``execute_fn`` overrides the built-in backend tool executor (used by the
     short-drama script agent to run domain tools bound to a project).
+    ``scope`` selects the agent config (global / script_agent) for model and
+    step/timeout tuning.
     """
     executor = execute_fn or _execute_tool
     db = next(get_db())
     try:
         user = db.query(User).filter(User.id == UUID(user_id)).first()
-        source = _resolve_text_source(db, user)
         from app.services.agent_config_service import get_agent_config
-        cfg = get_agent_config(db, "global")
+        cfg = get_agent_config(db, scope)
+        # 模型选择：优先用 Agent 配置里指定的文本模型变量名，否则回退默认解析。
+        model_variable = cfg.get("model_variable")
+        if model_variable:
+            source = resolve_source_for_variable(db, model_variable, user)
+        else:
+            source = _resolve_text_source(db, user)
         max_steps = int(cfg.get("max_steps") or MAX_TOOL_STEPS)
         tool_timeout = int(cfg.get("tool_timeout_sec") or TOOL_TIMEOUT_SECONDS)
     finally:

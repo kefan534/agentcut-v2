@@ -1,10 +1,20 @@
 # Based on Toonflow by HBAI-Ltd, licensed under Apache-2.0 + Supplemental License.
 """Pydantic schemas for the short-drama (Toonflow) module."""
+import re
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def strip_html(value: str) -> str:
+    """Strip HTML tags from user text (defense-in-depth against stored XSS)."""
+    if not isinstance(value, str):
+        return value
+    return _TAG_RE.sub("", value).strip()
 
 
 class DramaProjectBase(BaseModel):
@@ -19,6 +29,11 @@ class DramaProjectBase(BaseModel):
     video_model: Optional[str] = None
     image_quality: Optional[str] = None
     mode: Optional[str] = None
+
+    @field_validator("name", "intro", "art_style", "director_manual", mode="before")
+    @classmethod
+    def _clean_text(cls, v):
+        return strip_html(v) if isinstance(v, str) else v
 
 
 class DramaProjectCreate(DramaProjectBase):
@@ -37,6 +52,11 @@ class DramaProjectUpdate(BaseModel):
     video_model: Optional[str] = None
     image_quality: Optional[str] = None
     mode: Optional[str] = None
+
+    @field_validator("name", "intro", "art_style", "director_manual", mode="before")
+    @classmethod
+    def _clean_text(cls, v):
+        return strip_html(v) if isinstance(v, str) else v
 
 
 class DramaProjectOut(DramaProjectBase):

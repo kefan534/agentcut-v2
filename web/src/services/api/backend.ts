@@ -153,6 +153,14 @@ export async function fetchMe() {
     return data;
 }
 
+export async function changePassword(oldPassword: string, newPassword: string) {
+    const { data } = await backend.post<{ detail: string }>("/auth/change-password", {
+        old_password: oldPassword,
+        new_password: newPassword,
+    });
+    return data;
+}
+
 export async function refreshToken() {
     const { data } = await authBackend.post<{ access_token: string; refresh_token: string; token_type: string }>("/auth/refresh");
     setMemoryAccessToken(data.access_token);

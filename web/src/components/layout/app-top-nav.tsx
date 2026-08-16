@@ -6,6 +6,7 @@ import { navigationTools, type NavigationToolSlug } from "@/constant/navigation-
 import { AppConfigModal } from "@/components/layout/app-config-modal";
 import { MobileNavDrawer } from "@/components/layout/mobile-nav-drawer";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
+import { ChangePasswordModal } from "@/components/layout/change-password-modal";
 import { cn } from "@/lib/utils";
 import { useEffect, useRef, useState } from "react";
 import { useAgentStore } from "@/stores/use-agent-store";
@@ -15,6 +16,7 @@ export function AppTopNav() {
     const { pathname } = useLocation();
     const navigate = useNavigate();
     const [mobileNavOpen, setMobileNavOpen] = useState(false);
+    const [changePwOpen, setChangePwOpen] = useState(false);
     const autoConnectRef = useRef(false);
     const agentToken = useAgentStore((state) => state.token);
     const agentEnabled = useAgentStore((state) => state.enabled);
@@ -99,6 +101,7 @@ export function AppTopNav() {
                                             { key: "profile", label: `${currentUser.displayName}（${currentUser.credits} 积分）`, disabled: true },
                                             { key: "assets", label: "我的资产" },
                                             { key: "my-revenue", label: "我的收入" },
+                                            { key: "change-password", label: "修改密码" },
                                             ...(currentUser.role === "admin" ? [{ key: "admin", label: "管理后台" }] : []),
                                             { type: "divider" },
                                             { key: "logout", label: "退出登录" },
@@ -106,6 +109,7 @@ export function AppTopNav() {
                                         onClick: async ({ key }) => {
                                             if (key === "assets") navigate("/assets");
                                             if (key === "my-revenue") navigate("/my-revenue");
+                                            if (key === "change-password") setChangePwOpen(true);
                                             if (key === "admin") navigate("/admin");
                                             if (key === "logout") {
                                                 await logout();
@@ -130,6 +134,7 @@ export function AppTopNav() {
 
             <MobileNavDrawer open={mobileNavOpen} activeToolSlug={activeToolSlug} onClose={() => setMobileNavOpen(false)} />
             <AppConfigModal />
+            <ChangePasswordModal open={changePwOpen} onClose={() => setChangePwOpen(false)} />
         </>
     );
 }

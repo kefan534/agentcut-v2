@@ -9,7 +9,7 @@ from app.core.security import get_password_hash, verify_password, create_token_p
 from app.core.deps import get_current_user
 from app.services.credit_service import add_credits
 from app.models.user import User
-from app.schemas.user import UserRegister, UserLogin, UserOut, TokenPair, UserUpdate
+from app.schemas.user import UserRegister, UserLogin, UserOut, TokenPair, UserUpdate, ChangePasswordIn
 
 
 # Simple in-memory login rate limiter: max 5 failures per (ip+email) per 10 min.
@@ -34,6 +34,14 @@ def _is_rate_limited(key: str) -> bool:
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 security = HTTPBearer(auto_error=False)
+
+
+def _validate_password_strength(password: str) -> None:
+    """Weak-password guard: min length enforced by schema; require letters + digits."""
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="密码至少 8 位")
+    if password.isdigit() or password.isalpha():
+        raise HTTPException(status_code=400, detail="密码需同时包含字母和数字")
 
 
 ACCESS_COOKIE_KEY = "access_token"
@@ -61,6 +69,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str)
 
 @router.post("/register", response_model=UserOut)
 def register(payload: UserRegister, response: Response, db: Session = Depends(get_db)):
+    _validate_password_strength(payload.password)
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -163,3 +172,21 @@ def update_me(payload: UserUpdate, current_user: User = Depends(get_current_user
     db.commit()
     db.refresh(current_user)
     return current_user
+
+
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """修改当前用户密码（需校验旧密码）。"""
+    if not verify_password(payload.old_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="旧密码错误")
+    if payload.old_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+    _validate_password_strength(payload.new_password)
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"detail": "密码已修改，请重新登录"}

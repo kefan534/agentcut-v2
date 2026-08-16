@@ -18,7 +18,7 @@ from app.core.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.model import ApiSource
 from app.services.model_service import resolve_source_for_variable, list_available_models, build_catalog, first_active_source_by_category
-from app.services.gateway_service import call_upstream, stream_upstream, log_call, COST_MAP
+from app.services.gateway_service import call_upstream, stream_upstream, log_call, COST_MAP, _is_private_url, _is_backend_upload_url
 from app.services.credit_service import deduct_credits
 from app.services.async_job_service import create_job, get_job, submit_and_run
 from app.services.upload_service import save_upload_file, get_upload_file_path
@@ -442,6 +442,12 @@ async def _persist_external_url(url: str, user_dir: Path, user_id: int | str, mo
     """Download an external media URL and upload to COS (or save locally as fallback)."""
     import httpx
     from app.services import cos_service
+
+    # SSRF guard: refuse private / loopback / metadata URLs before fetching.
+    if _is_private_url(url):
+        logger.warning("Blocked fetch of private URL (SSRF guard): %s", url)
+        return None
+
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True) as client:
             response = await client.get(url)

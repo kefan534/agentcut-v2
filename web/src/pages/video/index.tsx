@@ -22,7 +22,7 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useGenerationHistory, type ChatMedia, type ChatMessage } from "@/hooks/use-generation-history";
-import type { GenerationSession } from "@/services/api/backend";
+import { quoteCredits, type GenerationSession } from "@/services/api/backend";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 
@@ -64,6 +64,17 @@ export default function VideoPage() {
 
     const model = effectiveConfig.videoModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
+
+    // 生成按钮积分预览
+    const [creditCost, setCreditCost] = useState<number | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        if (!model) { setCreditCost(null); return; }
+        quoteCredits(model, { vquality: effectiveConfig.vquality, size: effectiveConfig.size, videoSeconds: effectiveConfig.videoSeconds }, "video")
+            .then((c) => { if (!cancelled) setCreditCost(c); })
+            .catch(() => { if (!cancelled) setCreditCost(null); });
+        return () => { cancelled = true; };
+    }, [model, effectiveConfig.vquality, effectiveConfig.size, effectiveConfig.videoSeconds]);
 
     useEffect(() => {
         if (!running || !startedAt) return;
@@ -472,7 +483,7 @@ export default function VideoPage() {
                                     <span>{formatDuration(elapsedMs)}</span>
                                 </div>
                                 <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} disabled={!canGenerate} onClick={() => void generate()}>
-                                    开始生成
+                                    开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
                                 </Button>
                                 <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
                                     新建会话

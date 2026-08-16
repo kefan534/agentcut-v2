@@ -12,7 +12,7 @@ import AdminUsers from "@/pages/admin/admin-users";
 import AdminLogs from "@/pages/admin/admin-logs";
 import { AdminAgentConfig } from "@/pages/admin/admin-agent-config";
 import AdminSkillReview from "@/pages/admin-skill-review";
-import AdminModelPricing from "@/pages/admin-model-pricing";
+import AdminPricing from "@/pages/admin/admin-pricing";
 import AdminAuditLogs from "@/pages/admin-audit-logs";
 
 const TABS = [
@@ -20,10 +20,10 @@ const TABS = [
     { key: "models", label: "模型管理" },
     { key: "variables", label: "变量映射" },
     { key: "agent-config", label: "Agent 配置" },
+    { key: "pricing", label: "积分策略" },
     { key: "users", label: "用户管理" },
     { key: "logs", label: "调用日志" },
     { key: "skills", label: "Skill 审核" },
-    { key: "model-pricing", label: "Agent内置模型" },
     { key: "audit-logs", label: "审计日志" },
     { key: "config", label: "设置" },
 ];
@@ -33,10 +33,10 @@ const TAB_CONTENT: Record<string, React.ReactNode> = {
     models: <AdminModels />,
     variables: <AdminVariables />,
     "agent-config": <AdminAgentConfig />,
+    pricing: <AdminPricing />,
     users: <AdminUsers />,
     logs: <AdminLogs />,
     skills: <AdminSkillReview />,
-    "model-pricing": <AdminModelPricing />,
     "audit-logs": <AdminAuditLogs />,
     config: <AppConfigPanel />,
 };

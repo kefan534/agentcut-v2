@@ -27,6 +27,7 @@ from app.schemas.log import CallLogOut
 from app.services.credit_service import add_credits, deduct_credits
 from app.services.plugin_service import execute_plugin
 from app.models.agent_config import AgentConfig
+from app.models.pricing_rule import PricingRule
 from app.services.agent_config_service import get_agent_config, DEFAULT_AGENT_CONFIGS, AGENT_SCOPES
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -583,6 +584,78 @@ def dashboard(admin: User = Depends(require_admin), db: Session = Depends(get_db
         "by_variable": [{"variable_name": v, "count": c} for v, c in by_variable],
         "trend": trend,
     }
+
+
+# ── 积分策略（定价规则 CRUD）──────────────────────────────────
+
+class _PricingRuleBody(BaseModel):
+    variable_name: str
+    param_conditions: Dict[str, Any] = {}
+    credits: int
+    sort_order: int = 0
+    enabled: bool = True
+
+
+class _PricingRuleOut(BaseModel):
+    id: int
+    variable_name: str
+    param_conditions: Dict[str, Any]
+    credits: int
+    sort_order: int
+    enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/pricing-rules", response_model=List[_PricingRuleOut])
+def list_pricing_rules(
+    variable_name: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    q = db.query(PricingRule)
+    if variable_name:
+        q = q.filter(PricingRule.variable_name == variable_name)
+    return q.order_by(PricingRule.variable_name.asc(), PricingRule.sort_order.asc(), PricingRule.id.asc()).all()
+
+
+@router.post("/pricing-rules", response_model=_PricingRuleOut)
+def create_pricing_rule(payload: _PricingRuleBody, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    rule = PricingRule(**payload.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    _log_admin_action(db, admin, "admin_pricing_create", str(rule.id), meta={"variable_name": rule.variable_name, "credits": rule.credits})
+    db.commit()
+    return rule
+
+
+@router.put("/pricing-rules/{rule_id}", response_model=_PricingRuleOut)
+def update_pricing_rule(rule_id: int, payload: _PricingRuleBody, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    rule = db.query(PricingRule).filter(PricingRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    data = payload.model_dump(exclude_unset=True)
+    for k, v in data.items():
+        setattr(rule, k, v)
+    db.commit()
+    db.refresh(rule)
+    _log_admin_action(db, admin, "admin_pricing_update", str(rule_id), meta={"variable_name": rule.variable_name})
+    db.commit()
+    return rule
+
+
+@router.delete("/pricing-rules/{rule_id}")
+def delete_pricing_rule(rule_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    rule = db.query(PricingRule).filter(PricingRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    _log_admin_action(db, admin, "admin_pricing_delete", str(rule_id), meta={"variable_name": rule.variable_name})
+    db.commit()
+    return {"detail": "Rule deleted"}
 
 
 # P0: model_pricing admin API（独立 router）

@@ -859,6 +859,45 @@ export async function adminListLogs(params?: { user_id?: string; variable_name?:
     return data;
 }
 
+// 积分策略（定价规则）
+export type PricingRule = {
+    id: number;
+    variable_name: string;
+    param_conditions: Record<string, unknown>;
+    credits: number;
+    sort_order: number;
+    enabled: boolean;
+};
+
+export async function adminListPricingRules(variableName?: string) {
+    const { data } = await backend.get<PricingRule[]>("/admin/pricing-rules", { params: { variable_name: variableName } });
+    return data;
+}
+
+export async function adminCreatePricingRule(payload: Omit<PricingRule, "id">) {
+    const { data } = await backend.post<PricingRule>("/admin/pricing-rules", payload);
+    return data;
+}
+
+export async function adminUpdatePricingRule(id: number, payload: Partial<Omit<PricingRule, "id">>) {
+    const { data } = await backend.put<PricingRule>(`/admin/pricing-rules/${id}`, payload);
+    return data;
+}
+
+export async function adminDeletePricingRule(id: number) {
+    await backend.delete(`/admin/pricing-rules/${id}`);
+}
+
+// 报价（生成前预览积分）
+export async function quoteCredits(variableName: string, params: Record<string, unknown>, modalCategory?: string) {
+    const { data } = await backend.post<{ variable_name: string; credits: number }>("/gateway/quote", {
+        variable_name: variableName,
+        params,
+        modal_category: modalCategory,
+    });
+    return data.credits;
+}
+
 /**
  * Extract a user-friendly error message from an axios error.
  */

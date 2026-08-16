@@ -20,7 +20,7 @@ import { uploadImage } from "@/services/image-storage";
 import { useUserStore } from "@/stores/use-user-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 import { useGenerationHistory, type ChatMedia, type ChatMessage } from "@/hooks/use-generation-history";
-import type { GenerationSession } from "@/services/api/backend";
+import { quoteCredits, type GenerationSession } from "@/services/api/backend";
 import type { ReferenceImage } from "@/types/image";
 
 type GeneratedImage = {
@@ -67,6 +67,17 @@ export default function ImagePage() {
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
     const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
+
+    // 生成按钮积分预览
+    const [creditCost, setCreditCost] = useState<number | null>(null);
+    useEffect(() => {
+        let cancelled = false;
+        if (!model) { setCreditCost(null); return; }
+        quoteCredits(model, { size: config.size, quality: config.quality, count: config.count }, "image")
+            .then((c) => { if (!cancelled) setCreditCost(c); })
+            .catch(() => { if (!cancelled) setCreditCost(null); });
+        return () => { cancelled = true; };
+    }, [model, config.size, config.quality, config.count]);
 
     useEffect(() => {
         if (!running || !startedAt) return;
@@ -393,7 +404,7 @@ export default function ImagePage() {
                                     <span>{formatDuration(elapsedMs)}</span>
                                 </div>
                                 <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                                    开始生成
+                                    开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
                                 </Button>
                                 <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
                                     新建会话

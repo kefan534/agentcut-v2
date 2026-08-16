@@ -32,6 +32,60 @@ COST_MAP = {
 }
 
 
+def _match_conditions(conditions: Dict[str, Any], params: Dict[str, Any]) -> bool:
+    """Return True if request ``params`` satisfy all pricing ``conditions``.
+
+    Supports two kinds of keys:
+      * plain key         -> exact match (string-compared), e.g. {"size": "2K"}
+      * "<key>_max"/"<key>_min" -> numeric range, e.g. {"input_tokens_max": 1024}
+    """
+    for k, v in (conditions or {}).items():
+        if k.endswith("_max"):
+            key = k[:-4]
+            val = params.get(key)
+            if val is None:
+                return False
+            try:
+                if float(val) > float(v):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        elif k.endswith("_min"):
+            key = k[:-4]
+            val = params.get(key)
+            if val is None:
+                return False
+            try:
+                if float(val) < float(v):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        else:
+            if str(params.get(k)) != str(v):
+                return False
+    return True
+
+
+def resolve_credits(db: Session, variable_name: str, params: Dict[str, Any] | None = None, modal_category: str | None = None) -> int:
+    """Resolve the credit cost for a generation request.
+
+    Evaluates enabled ``pricing_rules`` for ``variable_name`` in ``sort_order``;
+    the first match wins. Falls back to the per-category ``COST_MAP`` default.
+    """
+    from app.models.pricing_rule import PricingRule
+    params = params or {}
+    rules = (
+        db.query(PricingRule)
+        .filter(PricingRule.variable_name == variable_name, PricingRule.enabled.is_(True))
+        .order_by(PricingRule.sort_order.asc(), PricingRule.id.asc())
+        .all()
+    )
+    for rule in rules:
+        if _match_conditions(rule.param_conditions, params):
+            return int(rule.credits)
+    return int(COST_MAP.get(modal_category or "text", 1))
+
+
 _ENDPOINT_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]*$")
 
 # ---------------------------------------------------------------------------

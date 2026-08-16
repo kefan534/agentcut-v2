@@ -18,7 +18,7 @@ from app.core.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.model import ApiSource
 from app.services.model_service import resolve_source_for_variable, list_available_models, build_catalog, first_active_source_by_category
-from app.services.gateway_service import call_upstream, stream_upstream, log_call, COST_MAP, _is_private_url, _is_backend_upload_url
+from app.services.gateway_service import call_upstream, stream_upstream, log_call, _is_private_url, _is_backend_upload_url
 from app.services.credit_service import deduct_credits
 from app.services.async_job_service import create_job, get_job, submit_and_run
 from app.services.upload_service import save_upload_file, get_upload_file_path
@@ -52,6 +52,20 @@ def get_models(
 def get_model_catalog(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Palmier-compatible model catalog."""
     return build_catalog(db, current_user)
+
+
+class QuoteRequest(BaseModel):
+    variable_name: str
+    params: Dict[str, Any] = {}
+    modal_category: Optional[str] = None
+
+
+@router.post("/quote")
+def quote_credits(payload: QuoteRequest, db: Session = Depends(get_db)):
+    """报价：根据模型变量名 + 参数，返回本次生成要扣的积分（供前端按钮预览）。"""
+    from app.services.gateway_service import resolve_credits
+    credits = resolve_credits(db, payload.variable_name, payload.params, payload.modal_category)
+    return {"variable_name": payload.variable_name, "credits": credits}
 
 
 @router.get("/logs", response_model=list[CallLogOut])
@@ -209,7 +223,8 @@ async def _run_transcription_job(job_id: str, request_body: Dict[str, Any], user
             return
 
         source = resolve_source_for_variable(db, "TRANSCRIPTION", user)
-        cost = COST_MAP.get("audio", 3)
+        from app.services.gateway_service import resolve_credits
+        cost = resolve_credits(db, "TRANSCRIPTION", {}, "audio")
 
         try:
             deduct_credits(
@@ -307,7 +322,8 @@ async def agent_stream(
     if not source:
         raise HTTPException(status_code=404, detail="No active text model configured")
 
-    cost = COST_MAP.get(source.modal_category, 1)
+    from app.services.gateway_service import resolve_credits
+    cost = resolve_credits(db, "TEXT_MODEL", {"input_tokens": len(json.dumps(body, ensure_ascii=False)) or 1}, source.modal_category)
     try:
         deduct_credits(
             db=db,
@@ -542,7 +558,18 @@ async def _run_gateway(
         raise HTTPException(status_code=404, detail=f"No active model for variable {variable_name}")
 
     modal_category = source.modal_category
-    cost = COST_MAP.get(modal_category, 1)
+    # 定价参数：body 里的 size/duration/resolution/quality 等直接参与匹配；
+    # 文本模型额外估算 input_tokens（按字符数近似，档位是粗粒度的）。
+    from app.services.gateway_service import resolve_credits
+    pricing_params = dict(body)
+    if modal_category == "text":
+        text = ""
+        if isinstance(body.get("messages"), list):
+            text = json.dumps(body["messages"], ensure_ascii=False)
+        elif body.get("prompt"):
+            text = str(body["prompt"])
+        pricing_params["input_tokens"] = len(text) or 1
+    cost = resolve_credits(db, variable_name, pricing_params, modal_category)
 
     try:
         deduct_credits(

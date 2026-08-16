@@ -4,6 +4,7 @@ import os
 import json
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -11,9 +12,11 @@ from app.db.session import get_db
 from app.core.deps import get_current_user, require_admin
 from app.core.config import settings
 from app.core.encryption import encrypt_api_key
-from app.models.user import User
+from app.models.user import User, CreditLedger
 from app.models.model import ApiSource, VariableMapping, ModelPlugin
 from app.models.log import CallLog
+from app.models.agent_audit_log import AgentAuditLog
+from app.models.asset import Asset
 from app.schemas.user import UserOut
 from app.schemas.model import (
     ApiSourceCreate, ApiSourceUpdate, ApiSourceOut,
@@ -47,6 +50,8 @@ def create_source(payload: ApiSourceCreate, db: Session = Depends(get_db), admin
     db.add(source)
     db.commit()
     db.refresh(source)
+    _log_admin_action(db, admin, "admin_model_create", str(source.id), meta={"vendor": source.vendor, "model_version": source.model_version})
+    db.commit()
     return source
 
 
@@ -72,6 +77,8 @@ def update_source(
 
     db.commit()
     db.refresh(source)
+    _log_admin_action(db, admin, "admin_model_update", str(source_id), meta={"changed": list(data.keys())})
+    db.commit()
     return source
 
 
@@ -109,12 +116,60 @@ def delete_source(source_id: int, db: Session = Depends(get_db), admin: User = D
         )
 
     try:
+        vendor = source.vendor
+        model_version = source.model_version
         db.delete(source)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="删除失败：该模型仍被数据库其他记录引用")
+    _log_admin_action(db, admin, "admin_model_delete", str(source_id), meta={"vendor": vendor, "model_version": model_version})
+    db.commit()
     return {"detail": "Source deleted"}
+
+
+@router.post("/models/{source_id}/test")
+async def test_source(source_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """测试模型源的连通性（GET base_url）。"""
+    import httpx
+    from app.core.encryption import decrypt_api_key
+    source = db.query(ApiSource).filter(ApiSource.id == source_id).first()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    url = (source.base_url or "").rstrip("/")
+    if not url:
+        return {"ok": False, "error": "base_url 为空"}
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+        return {"ok": resp.status_code < 500, "status_code": resp.status_code, "detail": "连接成功" if resp.status_code < 500 else resp.text[:200]}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:200]}
+
+
+@router.get("/models/stats")
+def model_stats(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """每个模型源的调用量、成功率、平均耗时统计。"""
+    rows = (
+        db.query(
+            CallLog.source_id,
+            func.count(CallLog.id).label("total"),
+            func.sum(case((CallLog.status == "success", 1), else_=0)).label("success"),
+            func.avg(CallLog.latency_ms).label("avg_latency"),
+        )
+        .filter(CallLog.source_id.isnot(None))
+        .group_by(CallLog.source_id)
+        .all()
+    )
+    stats = {}
+    for source_id, total, success, avg_latency in rows:
+        stats[source_id] = {
+            "total": total,
+            "success": int(success or 0),
+            "success_rate": round((success or 0) / total * 100, 1) if total else 0,
+            "avg_latency_ms": round(avg_latency or 0, 1),
+        }
+    return {"stats": stats}
 
 
 # ---------- Variable Mappings ----------
@@ -232,6 +287,17 @@ async def execute_plugin_endpoint(
 
 # ---------- Users ----------
 
+def _log_admin_action(db: Session, admin: User, event: str, target_id: str, status: str = "success", meta: Optional[dict] = None):
+    """记录 admin 敏感操作到审计日志（复用 agent_audit_logs 表）。"""
+    db.add(AgentAuditLog(
+        user_id=admin.id,
+        event=event,
+        target_id=target_id,
+        status=status,
+        meta=meta or {},
+    ))
+
+
 @router.get("/users", response_model=List[UserOut])
 def list_users(
     q: Optional[str] = Query(None),
@@ -242,6 +308,58 @@ def list_users(
     if q:
         query = query.filter(User.email.ilike(f"%{q}%"))
     return query.order_by(User.created_at.desc()).all()
+
+
+@router.get("/users/{user_id}")
+def get_user_detail(
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """用户详情：基本信息 + 积分流水 + 最近调用 + 资产。"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    ledger = (
+        db.query(CreditLedger).filter(CreditLedger.user_id == user_id)
+        .order_by(CreditLedger.created_at.desc()).limit(50).all()
+    )
+    calls = (
+        db.query(CallLog).filter(CallLog.user_id == user_id)
+        .order_by(CallLog.created_at.desc()).limit(20).all()
+    )
+    assets = (
+        db.query(Asset).filter(Asset.user_id == user_id)
+        .order_by(Asset.created_at.desc()).limit(20).all()
+    )
+
+    def _dt(v):
+        return v.isoformat() if v else None
+
+    return {
+        "user": {
+            "id": str(user.id), "email": user.email, "nickname": user.nickname,
+            "role": user.role, "level": user.level, "credits": user.credits,
+            "status": user.status, "created_at": _dt(user.created_at),
+        },
+        "ledger": [
+            {"id": str(r.id), "delta": r.delta, "balance_after": r.balance_after,
+             "reason": r.reason, "created_at": _dt(r.created_at)}
+            for r in ledger
+        ],
+        "recent_calls": [
+            {"id": str(r.id), "variable_name": r.variable_name, "modal_category": r.modal_category,
+             "status": r.status, "status_code": r.status_code, "latency_ms": r.latency_ms,
+             "cost_credits": r.cost_credits, "created_at": _dt(r.created_at)}
+            for r in calls
+        ],
+        "assets": [
+            {"id": str(r.id), "name": r.name, "asset_type": r.asset_type,
+             "created_at": _dt(r.created_at)}
+            for r in assets
+        ],
+    }
 
 
 @router.post("/users/{user_id}/credits")
@@ -258,6 +376,8 @@ def add_user_credits(
     if delta <= 0:
         raise HTTPException(status_code=400, detail="delta must be positive")
     new_balance = add_credits(db=db, user_id=user.id, delta=delta, reason=reason)
+    _log_admin_action(db, admin, "admin_recharge", str(user_id), meta={"delta": delta, "reason": reason})
+    db.commit()
     return {"user_id": user_id, "new_balance": new_balance}
 
 
@@ -268,12 +388,55 @@ def ban_user(user_id: UUID, db: Session = Depends(get_db), admin: User = Depends
         raise HTTPException(status_code=404, detail="User not found")
     user.status = "banned"
     db.commit()
+    _log_admin_action(db, admin, "admin_ban", str(user_id))
+    db.commit()
     return {"detail": "User banned"}
+
+
+@router.post("/users/{user_id}/unban")
+def unban_user(user_id: UUID, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.status != "banned":
+        raise HTTPException(status_code=400, detail="User is not banned")
+    user.status = "active"
+    db.commit()
+    _log_admin_action(db, admin, "admin_unban", str(user_id))
+    db.commit()
+    return {"detail": "User unbanned"}
+
+
+class _UserUpdateBody(BaseModel):
+    role: Optional[str] = None
+    level: Optional[str] = None
+    nickname: Optional[str] = None
+
+
+@router.put("/users/{user_id}", response_model=UserOut)
+def update_user(
+    user_id: UUID,
+    payload: _UserUpdateBody,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """修改用户角色/等级/昵称。"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    data = payload.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(user, field, value)
+    db.commit()
+    db.refresh(user)
+    _log_admin_action(db, admin, "admin_user_update", str(user_id), meta={"changed": list(data.keys())})
+    db.commit()
+    return user
 
 
 # ---------- Logs ----------
 
-@router.get("/logs", response_model=List[CallLogOut])
+@router.get("/logs")
 def list_logs(
     user_id: Optional[UUID] = Query(None),
     variable_name: Optional[str] = Query(None),
@@ -290,7 +453,9 @@ def list_logs(
         q = q.filter(CallLog.variable_name == variable_name)
     if status:
         q = q.filter(CallLog.status == status)
-    return q.order_by(CallLog.created_at.desc()).offset(offset).limit(limit).all()
+    total = q.count()
+    items = q.order_by(CallLog.created_at.desc()).offset(offset).limit(limit).all()
+    return {"total": total, "items": items}
 
 
 # ── P1: ima 知识库配置 ─────────────────────────────────────────
@@ -363,7 +528,55 @@ def update_agent_config(
         setattr(row, field, value)
 
     db.commit()
+    _log_admin_action(db, admin, "admin_agent_config_update", scope, meta={"changed": list(data.keys())})
+    db.commit()
     return {"ok": True, "scope": scope, "config": get_agent_config(db, scope)}
+
+
+# ── Dashboard 数据总览 ─────────────────────────────────────────
+
+@router.get("/dashboard")
+def dashboard(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from datetime import datetime, timedelta
+    now = datetime.utcnow()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = today_start - timedelta(days=7)
+
+    total_users = db.query(User).count()
+    active_users = db.query(User).filter(User.status == "active").count()
+    new_today = db.query(User).filter(User.created_at >= today_start).count()
+
+    total_calls = db.query(CallLog).count()
+    calls_today = db.query(CallLog).filter(CallLog.created_at >= today_start).count()
+    success_calls = db.query(CallLog).filter(CallLog.status == "success").count()
+
+    total_cost = db.query(func.coalesce(func.sum(CallLog.cost_credits), 0)).scalar() or 0
+    cost_today = (
+        db.query(func.coalesce(func.sum(CallLog.cost_credits), 0))
+        .filter(CallLog.created_at >= today_start).scalar() or 0
+    )
+
+    by_variable = (
+        db.query(CallLog.variable_name, func.count(CallLog.id))
+        .group_by(CallLog.variable_name)
+        .order_by(func.count(CallLog.id).desc())
+        .limit(10).all()
+    )
+
+    trend = []
+    for i in range(6, -1, -1):
+        day = today_start - timedelta(days=i)
+        next_day = day + timedelta(days=1)
+        cnt = db.query(CallLog).filter(CallLog.created_at >= day, CallLog.created_at < next_day).count()
+        trend.append({"date": day.strftime("%m-%d"), "count": cnt})
+
+    return {
+        "users": {"total": total_users, "active": active_users, "new_today": new_today},
+        "calls": {"total": total_calls, "today": calls_today, "success": success_calls},
+        "credits": {"total_cost": total_cost, "cost_today": cost_today},
+        "by_variable": [{"variable_name": v, "count": c} for v, c in by_variable],
+        "trend": trend,
+    }
 
 
 # P0: model_pricing admin API（独立 router）

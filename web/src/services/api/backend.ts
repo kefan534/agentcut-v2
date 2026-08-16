@@ -807,8 +807,52 @@ export async function adminBanUser(userId: string) {
     await backend.post(`/admin/users/${userId}/ban`);
 }
 
+export async function adminUnbanUser(userId: string) {
+    await backend.post(`/admin/users/${userId}/unban`);
+}
+
+export async function adminUpdateUser(userId: string, payload: { role?: string; level?: string; nickname?: string }) {
+    const { data } = await backend.put<BackendUser>(`/admin/users/${userId}`, payload);
+    return data;
+}
+
+export type AdminUserDetail = {
+    user: { id: string; email: string; nickname: string | null; role: string; level: string; credits: number; status: string; created_at: string | null };
+    ledger: { id: string; delta: number; balance_after: number; reason: string; created_at: string | null }[];
+    recent_calls: { id: string; variable_name: string; modal_category: string; status: string; status_code: number | null; latency_ms: number; cost_credits: number; created_at: string | null }[];
+    assets: { id: string; name: string; asset_type: string; created_at: string | null }[];
+};
+
+export async function adminGetUserDetail(userId: string) {
+    const { data } = await backend.get<AdminUserDetail>(`/admin/users/${userId}`);
+    return data;
+}
+
+export type AdminDashboard = {
+    users: { total: number; active: number; new_today: number };
+    calls: { total: number; today: number; success: number };
+    credits: { total_cost: number; cost_today: number };
+    by_variable: { variable_name: string; count: number }[];
+    trend: { date: string; count: number }[];
+};
+
+export async function adminGetDashboard() {
+    const { data } = await backend.get<AdminDashboard>("/admin/dashboard");
+    return data;
+}
+
+export async function adminTestModel(sourceId: number) {
+    const { data } = await backend.post<{ ok: boolean; status_code?: number; detail?: string; error?: string }>(`/admin/models/${sourceId}/test`);
+    return data;
+}
+
+export async function adminGetModelStats() {
+    const { data } = await backend.get<{ stats: Record<number, { total: number; success: number; success_rate: number; avg_latency_ms: number }> }>("/admin/models/stats");
+    return data;
+}
+
 export async function adminListLogs(params?: { user_id?: string; variable_name?: string; status?: string; limit?: number; offset?: number }) {
-    const { data } = await backend.get<AdminCallLog[]>("/admin/logs", { params });
+    const { data } = await backend.get<{ total: number; items: AdminCallLog[] }>("/admin/logs", { params });
     return data;
 }
 

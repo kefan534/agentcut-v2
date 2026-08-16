@@ -8,9 +8,6 @@ import LoginPage from "@/pages/login";
 import RegisterPage from "@/pages/register";
 import CanvasProjectPage from "@/pages/canvas/project";
 import AdminPage from "@/pages/admin";
-import AdminSkillReview from "@/pages/admin-skill-review";
-import AdminModelPricing from "@/pages/admin-model-pricing";
-import AdminAuditLogs from "@/pages/admin-audit-logs";
 import MyRevenuePage from "@/pages/my-revenue";
 import ConfigPage from "@/pages/config";
 import HomePage from "@/pages/home";
@@ -64,9 +61,7 @@ export const router = createBrowserRouter([
             { path: "/skill-store", element: <RequireAuth><SkillStorePage /></RequireAuth> },
             { path: "/my-revenue", element: <RequireAuth><MyRevenuePage /></RequireAuth> },
             { path: "/admin", element: <RequireAuth adminOnly><AdminPage /></RequireAuth> },
-            { path: "/admin/skills", element: <RequireAuth adminOnly><AdminSkillReview /></RequireAuth> },
-            { path: "/admin/model-pricing", element: <RequireAuth adminOnly><AdminModelPricing /></RequireAuth> },
-            { path: "/admin/audit-logs", element: <RequireAuth adminOnly><AdminAuditLogs /></RequireAuth> },
+            { path: "/admin/:tab", element: <RequireAuth adminOnly><AdminPage /></RequireAuth> },
             {
                 path: "/drama",
                 element: <RequireAuth><DramaLayout /></RequireAuth>,

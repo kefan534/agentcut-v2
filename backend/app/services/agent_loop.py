@@ -12,6 +12,7 @@ Design notes:
 - Tool execution happens in-process for backend tools; browser-side tools
   (file picker etc.) are out of scope for this first cut.
 """
+import asyncio
 import json
 from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
@@ -23,6 +24,18 @@ from app.services.model_service import resolve_source_for_variable, first_active
 from app.services.gateway_service import call_upstream
 
 MAX_TOOL_STEPS = 16
+TOOL_TIMEOUT_SECONDS = 30          # R4: 单工具执行超时
+MAX_CONCURRENT_TOOLS = 8           # R4: 全局工具并发上限
+
+_tool_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_tool_semaphore() -> asyncio.Semaphore:
+    """Lazy per-loop semaphore bounding concurrent in-process tool executions."""
+    global _tool_semaphore
+    if _tool_semaphore is None:
+        _tool_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TOOLS)
+    return _tool_semaphore
 
 
 def _resolve_text_source(db, user):
@@ -346,7 +359,17 @@ async def run_local_agent(
                     "threadId": thread_id,
                     "item": {"type": "mcp_tool_call", "tool": tool_name},
                 })
-                result = executor(user_id, tool_name, tool_args)
+                # R4: 工具执行加超时 + 并发限制（同步 executor 走线程池，防阻塞事件循环）。
+                try:
+                    async with _get_tool_semaphore():
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(executor, user_id, tool_name, tool_args),
+                            timeout=TOOL_TIMEOUT_SECONDS,
+                        )
+                except asyncio.TimeoutError:
+                    result = {"error": f"工具 {tool_name} 执行超时（>{TOOL_TIMEOUT_SECONDS}s）"}
+                except Exception as exc:  # noqa: BLE001
+                    result = {"error": f"工具 {tool_name} 执行异常：{exc}"}
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.get("id") or f"call_{_step}",

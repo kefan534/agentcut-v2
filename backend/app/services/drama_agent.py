@@ -6,6 +6,7 @@ system prompt and short-drama domain tools that read/write ``drama_novel`` and
 ``drama_script``. Mirrors Toonflow's ``scriptAgent`` (read novel chapters,
 read script, produce skeleton/strategy/script).
 """
+import asyncio
 import json
 from typing import Any, Callable, Dict, List, Tuple
 from uuid import UUID
@@ -266,46 +267,52 @@ async def extract_novel_events(
     finally:
         db.close()
 
-    done = 0
-    failed = 0
-    for novel in novels:
-        try:
-            body = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": EVENT_EXTRACTION_PROMPT},
-                    {"role": "user", "content": f"章节标题：{novel.chapter or ''}\n章节内容：\n{novel.chapter_data or ''}"},
-                ],
-            }
-            resp = await call_upstream(source, body, user_id=user_id)
-            text = ""
-            if isinstance(resp, dict):
-                choices = resp.get("choices") or []
-                if choices:
-                    text = (choices[0].get("message") or {}).get("content") or ""
+    # §2.4: 并发抽取（Toonflow concurrentCount=5），信号量限流。
+    semaphore = asyncio.Semaphore(5)
 
-            db = next(get_db())
+    async def _process_one(novel: DramaNovel) -> str:
+        async with semaphore:
             try:
-                row = db.query(DramaNovel).filter(DramaNovel.id == novel.id).first()
-                if row:
-                    row.event = text
-                    row.event_state = 1 if text else -1
-                    row.error_reason = None if text else "模型返回为空"
-                    db.commit()
-            finally:
-                db.close()
-            done += 1
-        except Exception as exc:  # noqa: BLE001
-            db = next(get_db())
-            try:
-                row = db.query(DramaNovel).filter(DramaNovel.id == novel.id).first()
-                if row:
-                    row.event_state = -1
-                    row.error_reason = str(exc)[:500]
-                    db.commit()
-            finally:
-                db.close()
-            failed += 1
+                body = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": EVENT_EXTRACTION_PROMPT},
+                        {"role": "user", "content": f"章节标题：{novel.chapter or ''}\n章节内容：\n{novel.chapter_data or ''}"},
+                    ],
+                }
+                resp = await call_upstream(source, body, user_id=user_id)
+                text = ""
+                if isinstance(resp, dict):
+                    choices = resp.get("choices") or []
+                    if choices:
+                        text = (choices[0].get("message") or {}).get("content") or ""
+
+                db = next(get_db())
+                try:
+                    row = db.query(DramaNovel).filter(DramaNovel.id == novel.id).first()
+                    if row:
+                        row.event = text
+                        row.event_state = 1 if text else -1
+                        row.error_reason = None if text else "模型返回为空"
+                        db.commit()
+                finally:
+                    db.close()
+                return "done"
+            except Exception as exc:  # noqa: BLE001
+                db = next(get_db())
+                try:
+                    row = db.query(DramaNovel).filter(DramaNovel.id == novel.id).first()
+                    if row:
+                        row.event_state = -1
+                        row.error_reason = str(exc)[:500]
+                        db.commit()
+                finally:
+                    db.close()
+                return "failed"
+
+    results = await asyncio.gather(*[_process_one(n) for n in novels])
+    done = results.count("done")
+    failed = results.count("failed")
 
     return {"ok": True, "total": len(novels), "done": done, "failed": failed}
 

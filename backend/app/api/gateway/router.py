@@ -17,7 +17,7 @@ from app.db.session import get_db
 from app.core.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.model import ApiSource
-from app.services.model_service import resolve_source_for_variable, list_available_models, build_catalog, first_active_source_by_category
+from app.services.model_service import resolve_source_for_variable, list_available_models, build_catalog
 from app.services.gateway_service import call_upstream, stream_upstream, log_call, _is_private_url, _is_backend_upload_url
 from app.services.credit_service import deduct_credits
 from app.services.async_job_service import create_job, get_job, submit_and_run
@@ -297,90 +297,9 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-# ---------------------------------------------------------------------------
-# Agent chat streaming (replaces Convex v1/agent/stream)
-# ---------------------------------------------------------------------------
-
-@router.post("/agent/stream")
-async def agent_stream(
-    request: Request,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Stream agent responses. Accepts an Anthropic-style request body.
-
-    Looks for a variable named TEXT_MODEL; if absent, uses the first active text source.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    source = resolve_source_for_variable(db, "TEXT_MODEL", current_user)
-    if not source:
-        source = first_active_source_by_category(db, "text", current_user)
-    if not source:
-        raise HTTPException(status_code=404, detail="No active text model configured")
-
-    from app.services.gateway_service import resolve_credits
-    cost = resolve_credits(db, "TEXT_MODEL", {"input_tokens": len(json.dumps(body, ensure_ascii=False)) or 1}, source.modal_category)
-    try:
-        deduct_credits(
-            db=db,
-            user_id=current_user.id,
-            amount=cost,
-            reason="agent",
-            reference_id=str(uuid.uuid4()),
-        )
-    except ValueError:
-        raise HTTPException(status_code=402, detail="Insufficient credits")
-
-    request_id = str(uuid.uuid4())
-    start = time.time()
-
-    async def event_stream():
-        try:
-            async for chunk in stream_upstream(source, body):
-                yield chunk
-
-            latency = (time.time() - start) * 1000
-            log_call(
-                db=db,
-                request_id=request_id,
-                user=current_user,
-                variable_name="TEXT_MODEL",
-                source=source,
-                modal_category=source.modal_category,
-                status="success",
-                status_code=200,
-                latency_ms=latency,
-                error_message=None,
-                cost_credits=cost,
-                request_body=body,
-                response_summary={"stream": True},
-            )
-        except Exception as e:
-            latency = (time.time() - start) * 1000
-            log_call(
-                db=db,
-                request_id=request_id,
-                user=current_user,
-                variable_name="TEXT_MODEL",
-                source=source,
-                modal_category=source.modal_category,
-                status="failed",
-                status_code=None,
-                latency_ms=latency,
-                error_message=str(e)[:500],
-                cost_credits=0,
-                request_body=body,
-                response_summary={},
-            )
-            # Yield a final SSE-style error so the client can surface it.
-            yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
+# (removed) legacy gateway/agent/stream endpoint — superseded by /api/v1/agent (local agent loop).
+# Kept as a marker so the route file structure is preserved; do not re-add the
+# hard-coded "TEXT_MODEL" branch here.
 
 # ---------------------------------------------------------------------------
 # Generic gateway generation (sync / async / proxy)
@@ -592,8 +511,38 @@ async def _run_gateway(
 
         if stream and modal_category == "text":
             async def event_stream():
-                async for chunk in stream_upstream(source, body, endpoint_override=endpoint_override):
-                    yield chunk
+                try:
+                    async for chunk in stream_upstream(source, body, endpoint_override=endpoint_override):
+                        yield chunk
+                except Exception as e:
+                    # P1-2：流式生成中途失败，退回已扣积分
+                    from app.services.credit_service import add_credits
+                    try:
+                        add_credits(
+                            db=db,
+                            user_id=current_user.id,
+                            delta=cost,
+                            reason="refund",
+                            reference_id=request_id,
+                        )
+                        log_call(
+                            db=db,
+                            request_id=request_id,
+                            user=current_user,
+                            variable_name=variable_name,
+                            source=source,
+                            modal_category=modal_category,
+                            status="failed",
+                            status_code=None,
+                            latency_ms=0,
+                            error_message=str(e)[:500],
+                            cost_credits=0,
+                            request_body=body,
+                            response_summary={},
+                        )
+                    except Exception:
+                        pass
+                    yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
             log_call(
                 db=db,

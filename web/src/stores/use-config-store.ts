@@ -49,6 +49,7 @@ export type AiConfig = {
     models: string[];
     quality: string;
     size: string;
+    resolution: string;
     background: string;
     count: string;
     canvasImageCount: string;
@@ -93,6 +94,7 @@ export const defaultConfig: AiConfig = {
     models: [],
     quality: "auto",
     size: "1:1",
+    resolution: "1K",
     background: "",
     count: "1",
     canvasImageCount: "3",
@@ -296,6 +298,7 @@ export const useConfigStore = create<ConfigStore>()(
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
                         canvasImageCount: config.canvasImageCount || "3",
+                        resolution: config.resolution || "1K",
                     },
                 };
             },

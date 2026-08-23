@@ -1,10 +1,10 @@
 """
-Agent proxy for EdgeOne Makers.
+Agent API (process-local agent).
 
-The frontend Agent panel originally talked to a local Codex canvas-agent
-(http://127.0.0.1:17371). This router exposes the same wire protocol so the
-panel needs minimal changes, while forwarding the actual brain to an EdgeOne
-Makers-hosted AgentCut agent.
+The frontend Agent panel talks to this router, which drives a process-local
+tool-calling loop (``run_local_agent`` → ``call_upstream``) instead of an
+external EdgeOne Makers-hosted agent. A small Makers interrupt bridge
+(``/interrupt``) is retained for backward compatibility.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from app.models.asset import Asset
 from app.services import cos_service
 from app.services.credit_service import get_user_credits, deduct_credits
 from app.services.model_service import build_catalog
-from app.services.gateway_service import COST_MAP
+from app.services.gateway_service import COST_MAP, resolve_credits
 from app.services.agent_loop import run_local_agent, BUILTIN_TOOLS, build_skill_tools
 from app.services.drama_agent import make_script_agent
 
@@ -394,9 +394,43 @@ async def agent_turn(
     if pre_prompt_parts:
         final_prompt = "\n\n".join(pre_prompt_parts) + "\n\n" + final_prompt
 
-    # 读通用 Agent 配置（db 关闭前）
+    # 读 Agent 配置（db 关闭前），并解析本次 turn 的文本模型与积分
     from app.services.agent_config_service import get_agent_config
-    global_cfg = get_agent_config(db, "global")
+    from app.services.model_service import resolve_source_for_variable, first_active_source_by_category
+    from app.services.gateway_service import resolve_credits
+    from app.services.credit_service import deduct_credits
+
+    agent_scope = "script_agent" if (payload.scope == "script_agent" and payload.projectId) else "global"
+    turn_cfg = get_agent_config(db, agent_scope)
+    global_cfg = turn_cfg if agent_scope == "global" else get_agent_config(db, "global")
+
+    # P0-2：主链路 Agent 聊天接入积分扣费（与 _run_gateway 一致）
+    model_variable = turn_cfg.get("model_variable")
+    if model_variable:
+        agent_source = resolve_source_for_variable(db, model_variable, current_user)
+    else:
+        agent_source = first_active_source_by_category(db, "text", current_user)
+    if not agent_source:
+        db.close()
+        raise HTTPException(status_code=412, detail="未配置文本模型，请在管理后台设置模型路由")
+    agent_turn_cost = resolve_credits(
+        db,
+        model_variable or agent_source.model_version,
+        {"input_tokens": len(final_prompt) or 1},
+        "text",
+    )
+    agent_turn_ref = str(uuid.uuid4())
+    try:
+        deduct_credits(
+            db=db,
+            user_id=current_user.id,
+            amount=agent_turn_cost,
+            reason="agent_turn",
+            reference_id=agent_turn_ref,
+        )
+    except ValueError:
+        db.close()
+        raise HTTPException(status_code=402, detail="Insufficient credits")
 
     db.close()
 
@@ -406,7 +440,6 @@ async def agent_turn(
 
     # Build OpenAI messages + tools based on scope, then run the process-local
     # agent loop in the background. Events are pushed to the user's SSE queues.
-    agent_scope = "script_agent" if (payload.scope == "script_agent" and payload.projectId) else "global"
     if agent_scope == "script_agent":
         system_prompt, tools, execute_fn = make_script_agent(payload.projectId)
     else:
@@ -418,7 +451,10 @@ async def agent_turn(
         tools = tools + build_skill_tools(user_id)
         execute_fn = None
     messages = _build_openai_messages(user_id, thread_id, final_prompt, system_prompt)
-    asyncio.create_task(_run_local_agent_task(user_id, thread_id, conversation_id, messages, tools, execute_fn, agent_scope))
+    asyncio.create_task(_run_local_agent_task(
+        user_id, thread_id, conversation_id, messages, tools, execute_fn,
+        agent_scope, agent_turn_cost, agent_turn_ref,
+    ))
 
     return {
         "ok": True,
@@ -449,6 +485,8 @@ async def _run_local_agent_task(
     tools: List[Dict[str, Any]],
     execute_fn=None,
     scope: str = "global",
+    cost: int = 0,
+    ref_id: str = None,
 ) -> None:
     """Run the local agent loop and persist the assistant reply to history."""
     stream_id = f"{conversation_id}:msg"
@@ -456,120 +494,32 @@ async def _run_local_agent_task(
     def emit(event_name: str, payload: Dict[str, Any]) -> None:
         _enqueue(user_id, event_name, payload)
 
-    text = await run_local_agent(user_id, thread_id, messages, tools, emit, stream_id, execute_fn, scope)
+    try:
+        text = await run_local_agent(user_id, thread_id, messages, tools, emit, stream_id, execute_fn, scope)
+    except Exception as e:
+        # P1-2：Agent 执行失败，退回本次 turn 已扣积分（直接退款策略）
+        if cost and ref_id:
+            try:
+                from uuid import UUID as _UUID
+                from app.services.credit_service import add_credits
+                add_credits(
+                    db=next(get_db()),
+                    user_id=_UUID(user_id),
+                    delta=cost,
+                    reason="refund",
+                    reference_id=ref_id,
+                )
+            except Exception:
+                pass
+        _enqueue(user_id, "agent_error", {"message": str(e)[:500], "threadId": thread_id})
+        return
+
     if text:
         _add_assistant_message(user_id, thread_id, text)
 
 
-async def _stream_from_makers(user_id: str, thread_id: str, conversation_id: str, body: Dict[str, Any]) -> None:
-    """Read the Makers SSE stream and forward events to the frontend."""
-    headers: Dict[str, str] = {
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "Makers-Conversation-Id": conversation_id,
-    }
-    if EDGEONE_MAKERS_API_KEY:
-        headers["Authorization"] = f"Bearer {EDGEONE_MAKERS_API_KEY}"
-
-    url = _makers_url()
-    print(f"[MAKERS] POST {url} body_keys={list(body.keys())} prompt_len={len(body.get('prompt',''))}", flush=True)
-    stream_id = f"{conversation_id}:msg"
-    assistant_text = ""
-
-    _enqueue(user_id, "codex_state", {"busy": True, "threadId": thread_id, "turnId": ""})
-
-    try:
-        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True, cookies=_makers_cookies()) as client:
-            async with client.stream("POST", url, json=body, headers=headers) as response:
-                print(f"[MAKERS] response status={response.status_code}", flush=True)
-                response.raise_for_status()
-                buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
-                    while "\n\n" in buffer:
-                        frame, buffer = buffer.split("\n\n", 1)
-                        event_name, data = _parse_makers_frame(frame)
-                        if not event_name or data is None:
-                            continue
-                        if event_name == "text_delta":
-                            assistant_text += data.get("delta", "")
-                            _enqueue(user_id, "agent_event", {
-                                "agent": "agentcut",
-                                "type": "item.updated",
-                                "threadId": thread_id,
-                                "item": {"id": stream_id, "type": "agent_message", "text": assistant_text},
-                            })
-                        else:
-                            _enqueue_makers_event(user_id, thread_id, stream_id, event_name, data)
-                        if event_name in ("done", "error"):
-                            if assistant_text:
-                                _add_assistant_message(user_id, thread_id, assistant_text)
-                                assistant_text = ""
-                            if event_name == "error":
-                                _add_assistant_message(user_id, thread_id, f"Agent error: {data.get('message', 'unknown')}")
-    except httpx.HTTPStatusError as exc:
-        try:
-            detail = (await exc.response.aread()).decode("utf-8", errors="replace") or str(exc)
-        except Exception:
-            detail = str(exc)
-        _enqueue(user_id, "agent_error", {"message": f"Makers HTTP error: {detail}", "threadId": thread_id})
-        _add_assistant_message(user_id, thread_id, f"Agent HTTP error: {detail}")
-    except Exception as exc:
-        _enqueue(user_id, "agent_error", {"message": f"Makers stream error: {exc}", "threadId": thread_id})
-        _add_assistant_message(user_id, thread_id, f"Agent stream error: {exc}")
-    finally:
-        if assistant_text:
-            _add_assistant_message(user_id, thread_id, assistant_text)
-        _enqueue(user_id, "codex_state", {"busy": False, "threadId": thread_id, "turnId": ""})
-
-
-def _parse_makers_frame(frame: str) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Parse a Makers SSE frame into (event_name, data)."""
-    lines = frame.strip().split("\n")
-    event = ""
-    data_lines: list[str] = []
-    for line in lines:
-        if line.startswith("event: "):
-            event = line[7:].strip()
-        elif line.startswith("data: "):
-            data_lines.append(line[6:])
-    if not event or not data_lines:
-        return None, None
-    try:
-        data = json.loads("\n".join(data_lines))
-    except json.JSONDecodeError:
-        return None, None
-    return event, data
-
-
-def _enqueue_makers_event(user_id: str, thread_id: str, stream_id: str, event: str, data: Dict[str, Any]) -> None:
-    """Enqueue a non-delta Makers event to the frontend."""
-    if event == "tool_called":
-        _enqueue(user_id, "agent_event", {
-            "agent": "agentcut",
-            "type": "item.started",
-            "threadId": thread_id,
-            "item": {"type": "mcp_tool_call", "tool": data.get("tool")},
-        })
-    elif event == "tool_output":
-        _enqueue(user_id, "agent_event", {
-            "agent": "agentcut",
-            "type": "item.completed",
-            "threadId": thread_id,
-            "item": {"type": "mcp_tool_call", "tool": data.get("tool"), "result": data.get("output")},
-        })
-    elif event == "error":
-        _enqueue(user_id, "agent_error", {
-            "threadId": thread_id,
-            "message": data.get("message", "Agent error"),
-            "detail": data.get("detail"),
-        })
-    elif event == "done":
-        _enqueue(user_id, "agent_event", {
-            "agent": "agentcut",
-            "type": "turn.completed",
-            "threadId": thread_id,
-        })
+# (removed) Makers proxy streaming helpers (_stream_from_makers, _parse_makers_frame,
+# _enqueue_makers_event) — superseded by the process-local agent loop (run_local_agent).
 
 
 # -----------------------------------------------------------------------------
@@ -765,25 +715,8 @@ def list_knowledge_bases(current_user: User = Depends(get_current_user)):
 # Model selection (P0) — list allowed models and switch
 # ---------------------------------------------------------------------------
 
-# Makers 内置模型固定列表（与 admin/model_pricing.py 保持一致）
-MAKERS_BUILTIN_MODELS = [
-    "@makers/hy3",
-    "@makers/hy3-preview",
-    "@makers/deepseek-v4-pro",
-    "@makers/deepseek-v4-flash",
-    "@makers/minimax-m3",
-    "@makers/minimax-m2.7",
-    "@makers/kimi-k2.6",
-]
-
-
-def _get_active_builtin_model(db: Session) -> str:
-    """Return the currently enabled builtin model, defaulting to env var or first builtin."""
-    from app.models.model_pricing import ModelPricing
-    row = db.query(ModelPricing).filter(ModelPricing.enabled == True).first()
-    if row:
-        return row.model_id
-    return os.environ.get("AI_GATEWAY_MODEL", "") or MAKERS_BUILTIN_MODELS[0]
+# (removed) dead Makers builtin-model list / _get_active_builtin_model duplicate —
+# the live copy lives in app/api/admin/model_pricing.py.
 
 
 @router.get("/models")
@@ -814,7 +747,7 @@ async def agent_list_models(
             "vendor": source.vendor,
             "kind": "text",
             "supportsTools": True,
-            "costPerTurn": 1,
+            "costPerTurn": resolve_credits(db, m.variable_name, {}, "text"),
             "enabled": True,
         })
 
@@ -827,7 +760,7 @@ async def agent_list_models(
                 "vendor": source.vendor,
                 "kind": "text",
                 "supportsTools": True,
-                "costPerTurn": 1,
+                "costPerTurn": resolve_credits(db, source.model_version, {}, "text"),
                 "enabled": True,
             })
 

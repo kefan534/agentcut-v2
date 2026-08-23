@@ -73,11 +73,11 @@ export default function ImagePage() {
     useEffect(() => {
         let cancelled = false;
         if (!model) { setCreditCost(null); return; }
-        quoteCredits(model, { size: config.size, quality: config.quality, count: config.count }, "image")
+        quoteCredits(model, { size: config.size, quality: config.quality, count: config.count, resolution: config.resolution }, "image")
             .then((c) => { if (!cancelled) setCreditCost(c); })
             .catch(() => { if (!cancelled) setCreditCost(null); });
         return () => { cancelled = true; };
-    }, [model, config.size, config.quality, config.count]);
+    }, [model, config.size, config.quality, config.count, config.resolution]);
 
     useEffect(() => {
         if (!running || !startedAt) return;

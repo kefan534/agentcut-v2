@@ -39,7 +39,7 @@ export default function DramaSettingsPage() {
                 </div>
                 <div>
                     <h1 className="text-xl font-semibold tracking-tight text-stone-950 dark:text-stone-100">模型与部署</h1>
-                    <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">短剧工坊使用的模型由 AgentCut 模型路由统一管理。</p>
+                    <p className="mt-0.5 text-sm text-stone-500 dark:text-stone-400">制片工坊使用的模型由 AgentCut 模型路由统一管理。</p>
                 </div>
             </div>
 
@@ -85,7 +85,7 @@ export default function DramaSettingsPage() {
             </div>
 
             <div className="mt-6 rounded-lg border border-stone-200 bg-stone-50 p-4 text-xs leading-relaxed text-stone-500 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
-                模型、API 密钥与积分计费在 AgentCut「管理后台 → 模型路由」中统一维护，短剧工坊直接复用。如需更换文本/图像/视频模型，请在管理后台调整对应的模型源与映射。
+                模型、API 密钥与积分计费在 AgentCut「管理后台 → 模型路由」中统一维护，制片工坊直接复用。如需更换文本/图像/视频模型，请在管理后台调整对应的模型源与映射。
             </div>
         </div>
     );

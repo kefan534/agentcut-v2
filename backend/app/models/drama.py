@@ -12,7 +12,7 @@ Only ``drama_project`` is created in P1 (project CRUD). The remaining
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, String, DateTime, Text, Integer, Index
+from sqlalchemy import Column, String, DateTime, Text, Integer, Index, text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.session import Base
@@ -216,4 +216,39 @@ class DramaArtStyle(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(
         DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class DramaLockCard(Base):
+    """P1-6 全局锁定卡：在编剧/分镜前锚定风格、角色外观、场景、道具与硬性规则，
+    后续所有资产/分镜严格引用，解决角色/场景一致性痛点（如《门朝北》《念念有爪》）。
+    每个项目唯一一张（project_id 唯一约束）。"""
+
+    __tablename__ = "drama_lock_card"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    project_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    style = Column(Text, nullable=True)        # 全局风格 / 画风
+    characters = Column(Text, nullable=True)   # 角色外观圣经（姓名/外貌/服装/特征）
+    scenes = Column(Text, nullable=True)       # 场景圣经（地点/时段/氛围/标志性元素）
+    props = Column(Text, nullable=True)        # 道具圣经
+    hard_rules = Column(Text, nullable=True)   # 硬性规则（不可违背的约束）
+
+    is_deleted = Column(String(1), nullable=False, default="N")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    # R3-3: 「每个项目一张活跃锁定卡」用部分唯一索引表达（WHERE is_deleted='N'），
+    # 避免物理 unique 与软删除冲突（软删后再建会撞约束 / 并发 upsert 双插）。
+    __table_args__ = (
+        Index(
+            "uq_drama_lock_card_active",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_deleted = 'N'"),
+        ),
     )

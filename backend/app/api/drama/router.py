@@ -7,6 +7,7 @@ AI-driven parts (novel event extraction, script agent streaming) reuse the
 P0.5 process-local agent / gateway.
 """
 import asyncio
+import uuid
 from uuid import UUID
 from typing import List, Optional
 
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.models.drama import DramaProject, DramaNovel, DramaScript, DramaAsset, DramaStoryboard, DramaVideo, DramaArtStyle
+from app.models.drama import DramaProject, DramaNovel, DramaScript, DramaAsset, DramaStoryboard, DramaVideo, DramaArtStyle, DramaLockCard
 from app.services.drama_agent import extract_novel_events, generate_storyboards_from_script
 from app.schemas.drama import (
     DramaProjectCreate,
@@ -679,7 +680,8 @@ async def generate_storyboard_image(
 ):
     """调用图像模型为分镜生成画面图（P6）。"""
     from app.services.model_service import resolve_source_for_variable
-    from app.services.gateway_service import call_upstream
+    from app.services.gateway_service import call_upstream, compute_cost
+    from app.services.credit_service import freeze_credits, settle_frozen_credits, release_frozen_credits
     from app.api.gateway.router import _save_generated_media
 
     sb = db.query(DramaStoryboard).filter(
@@ -695,13 +697,21 @@ async def generate_storyboard_image(
     if not source or source.modal_category != "image":
         raise HTTPException(status_code=404, detail=f"图像模型不可用：{payload.model}")
 
+    prompt = sb.prompt or f"{project.art_style or ''} 分镜画面：{sb.video_desc or ''}"
+    body = {"model": source.model_version, "prompt": prompt, "size": payload.size, "n": 1}
+
+    # R2-#5: drama 计费接入 —— 冻结→成功结算/失败释放
+    cost = compute_cost(db, payload.model, body, "image")
+    try:
+        freeze_credits(db=db, user_id=current_user.id, amount=cost, reference_id=str(storyboard_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+
     sb.image_state = "生成中"
     sb.error_reason = None
     db.commit()
 
-    prompt = sb.prompt or f"{project.art_style or ''} 分镜画面：{sb.video_desc or ''}"
-    body = {"model": source.model_version, "prompt": prompt, "size": payload.size, "n": 1}
-
+    generated_ok = False
     try:
         result = await call_upstream(
             source, body, endpoint_override="/images/generations", user_id=str(current_user.id)
@@ -710,12 +720,27 @@ async def generate_storyboard_image(
         if urls:
             sb.image_url = urls[0]
             sb.image_state = "已完成"
+            generated_ok = True
         else:
             sb.image_state = "生成失败"
             sb.error_reason = "模型未返回图片"
     except Exception as exc:  # noqa: BLE001
         sb.image_state = "生成失败"
         sb.error_reason = str(exc)[:500]
+
+    if generated_ok:
+        try:
+            settle_frozen_credits(db=db, user_id=current_user.id, amount=cost, reference_id=str(storyboard_id))
+        except ValueError:
+            try:
+                release_frozen_credits(db=db, user_id=current_user.id, amount=cost, reference_id=str(storyboard_id))
+            except ValueError:
+                pass
+    else:
+        try:
+            release_frozen_credits(db=db, user_id=current_user.id, amount=cost, reference_id=str(storyboard_id))
+        except ValueError:
+            pass
 
     db.commit()
     db.refresh(sb)
@@ -768,16 +793,17 @@ async def create_drama_video(
 
 
 async def _run_video_generation(video_id: str, user_id: str) -> None:
-    """后台生成视频：调视频模型，写回 video_url/state。"""
+    """后台生成视频：冻结积分 → 调视频模型 → 成功结算/失败释放，写回 video_url/state。"""
     from app.services.model_service import resolve_source_for_variable
-    from app.services.gateway_service import call_upstream, _is_fluxart_source
+    from app.services.gateway_service import call_upstream, _is_fluxart_source, compute_cost
+    from app.services.credit_service import freeze_credits, settle_frozen_credits, release_frozen_credits
     from app.api.gateway.router import _save_generated_media
 
     db = next(get_db())
     try:
         video = db.query(DramaVideo).filter(DramaVideo.id == video_id).first()
         user = db.query(User).filter(User.id == user_id).first()
-        if not video or not video.model:
+        if not video or not video.model or not user:
             return
         source = resolve_source_for_variable(db, video.model, user)
         if not source or source.modal_category != "video":
@@ -802,19 +828,47 @@ async def _run_video_generation(video_id: str, user_id: str) -> None:
         if reference_urls:
             body["image_urls"] = reference_urls
 
-        # flux-art（Grok）走 /videos/generations + 轮询；其余模型走各自适配器。
-        endpoint = "/videos/generations" if _is_fluxart_source(source) else None
-        result = await call_upstream(source, body, endpoint_override=endpoint, user_id=user_id)
-        urls = await _save_generated_media(result, user, "video")
-        if urls:
-            video.video_url = urls[0]
-            video.state = "成功"
-        else:
+        # R2-#5: drama 计费接入 —— 冻结→成功结算/失败释放。
+        # 启动恢复路径复用本函数：main.py 先做孤儿冻结对账再恢复任务，不会重复扣费。
+        cost = compute_cost(db, video.model, body, "video")
+        try:
+            freeze_credits(db=db, user_id=user.id, amount=cost, reference_id=str(video_id))
+        except ValueError as exc:
             video.state = "失败"
-            video.error_reason = "模型未返回视频"
-    except Exception as exc:  # noqa: BLE001
-        video.state = "失败"
-        video.error_reason = str(exc)[:500]
+            video.error_reason = str(exc)[:200]
+            db.commit()
+            return
+
+        generated_ok = False
+        try:
+            # flux-art（Grok）走 /videos/generations + 轮询；其余模型走各自适配器。
+            endpoint = "/videos/generations" if _is_fluxart_source(source) else None
+            result = await call_upstream(source, body, endpoint_override=endpoint, user_id=user_id)
+            urls = await _save_generated_media(result, user, "video")
+            if urls:
+                video.video_url = urls[0]
+                video.state = "成功"
+                generated_ok = True
+            else:
+                video.state = "失败"
+                video.error_reason = "模型未返回视频"
+        except Exception as exc:  # noqa: BLE001
+            video.state = "失败"
+            video.error_reason = str(exc)[:500]
+
+        if generated_ok:
+            try:
+                settle_frozen_credits(db=db, user_id=user.id, amount=cost, reference_id=str(video_id))
+            except ValueError:
+                try:
+                    release_frozen_credits(db=db, user_id=user.id, amount=cost, reference_id=str(video_id))
+                except ValueError:
+                    pass
+        else:
+            try:
+                release_frozen_credits(db=db, user_id=user.id, amount=cost, reference_id=str(video_id))
+            except ValueError:
+                pass
     finally:
         db.commit()
         db.close()
@@ -867,25 +921,44 @@ async def compose_drama_videos(
 
     from app.services.media_service import compose_videos
     from app.services import cos_service
+    from app.services.credit_service import deduct_credits, add_credits
     from app.core.config import settings
     from pathlib import Path
     import uuid as _uuid
 
-    composed_bytes = await compose_videos([v.video_url for v in videos])
-
-    # 上传成片（COS 优先，本地 fallback）
-    if cos_service.is_configured():
-        key = cos_service.upload_bytes(
-            composed_bytes, prefix="generated", user_id=current_user.id,
-            content_type="video/mp4", ext="mp4",
+    # R2-#5: 合成按次固定计费，失败全额退款
+    _COMPOSE_CREDITS = 10
+    try:
+        deduct_credits(
+            db=db, user_id=current_user.id, amount=_COMPOSE_CREDITS,
+            reason="compose", reference_id=str(payload.project_id),
         )
-        composed_url = cos_service.get_presigned_url(key, expires_in=86400 * 7)
-    else:
-        user_dir = Path(settings.UPLOAD_DIR) / str(current_user.id)
-        user_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"{_uuid.uuid4().hex}.mp4"
-        (user_dir / fname).write_bytes(composed_bytes)
-        composed_url = f"/api/v1/upload/{current_user.id}/{fname}"
+    except ValueError as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+
+    try:
+        composed_bytes = await compose_videos([v.video_url for v in videos])
+
+        # 上传成片（COS 优先，本地 fallback）
+        if cos_service.is_configured():
+            key = cos_service.upload_bytes(
+                composed_bytes, prefix="generated", user_id=current_user.id,
+                content_type="video/mp4", ext="mp4",
+            )
+            composed_url = cos_service.get_presigned_url(key, expires_in=86400 * 7)
+        else:
+            user_dir = Path(settings.UPLOAD_DIR) / str(current_user.id)
+            user_dir.mkdir(parents=True, exist_ok=True)
+            fname = f"{_uuid.uuid4().hex}.mp4"
+            (user_dir / fname).write_bytes(composed_bytes)
+            composed_url = f"/api/v1/upload/{current_user.id}/{fname}"
+    except Exception:
+        # 合成/上传失败：退回本次扣减的积分
+        add_credits(
+            db=db, user_id=current_user.id, delta=_COMPOSE_CREDITS,
+            reason="refund", reference_id=str(payload.project_id),
+        )
+        raise
 
     # 写回成片记录
     composed = DramaVideo(
@@ -1023,3 +1096,70 @@ def get_drama_models(
 
 
 # --- Art style / Models end ---
+
+
+# ---------------------------------------------------------------------------
+# P1-6 全局锁定卡（Global Lock Card）
+# ---------------------------------------------------------------------------
+
+class DramaLockCardBody(BaseModel):
+    style: Optional[str] = None
+    characters: Optional[str] = None
+    scenes: Optional[str] = None
+    props: Optional[str] = None
+    hard_rules: Optional[str] = None
+
+
+def _lock_card_payload(card: Optional[DramaLockCard], project_id: UUID) -> dict:
+    return {
+        "exists": card is not None,
+        "project_id": str(project_id),
+        "style": card.style if card else None,
+        "characters": card.characters if card else None,
+        "scenes": card.scenes if card else None,
+        "props": card.props if card else None,
+        "hard_rules": card.hard_rules if card else None,
+    }
+
+
+@router.get("/{project_id}/lock-card")
+def get_lock_card(
+    project_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取项目的全局锁定卡（不存在时返回 exists=false）。"""
+    _get_owned_project(project_id, current_user.id, db)
+    card = (
+        db.query(DramaLockCard)
+        .filter(DramaLockCard.project_id == project_id, DramaLockCard.is_deleted == "N")
+        .first()
+    )
+    return _lock_card_payload(card, project_id)
+
+
+@router.put("/{project_id}/lock-card")
+def upsert_lock_card(
+    project_id: UUID,
+    body: DramaLockCardBody,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """创建或更新项目的全局锁定卡（每个项目唯一一张）。"""
+    _get_owned_project(project_id, current_user.id, db)
+    card = (
+        db.query(DramaLockCard)
+        .filter(DramaLockCard.project_id == project_id, DramaLockCard.is_deleted == "N")
+        .first()
+    )
+    if not card:
+        card = DramaLockCard(id=uuid.uuid4(), user_id=current_user.id, project_id=project_id)
+        db.add(card)
+    card.style = body.style
+    card.characters = body.characters
+    card.scenes = body.scenes
+    card.props = body.props
+    card.hard_rules = body.hard_rules
+    db.commit()
+    db.refresh(card)
+    return _lock_card_payload(card, project_id)

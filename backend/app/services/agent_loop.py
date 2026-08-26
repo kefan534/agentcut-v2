@@ -55,6 +55,24 @@ def _resolve_text_source(db, user):
     return first_active_source_by_category(db, "text", user)
 
 
+def _resolve_audio_source(db, user):
+    """Resolve the TTS / audio model source (AUDIO_MODEL variable).
+
+    TTS 配音目前仅保留调用接口（变量占位）：优先解析 AUDIO_MODEL 映射，
+    否则回退到任意 audio 类别映射 / 第一个启用 audio 源。供应商尚未接通时
+    返回 None，由调用方给出「未配置」提示。
+    """
+    source = resolve_source_for_variable(db, "AUDIO_MODEL", user)
+    if source:
+        return source
+    mappings = db.query(VariableMapping).filter(VariableMapping.modal_category == "audio").all()
+    for m in mappings:
+        source = resolve_source_for_variable(db, m.variable_name, user)
+        if source:
+            return source
+    return first_active_source_by_category(db, "audio", user)
+
+
 # ---------------------------------------------------------------------------
 # Built-in tool schemas (OpenAI function-calling format)
 # ---------------------------------------------------------------------------

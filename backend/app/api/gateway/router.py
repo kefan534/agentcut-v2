@@ -18,9 +18,10 @@ from app.core.deps import get_current_user, get_current_user_optional
 from app.models.user import User
 from app.models.model import ApiSource
 from app.services.model_service import resolve_source_for_variable, list_available_models, build_catalog
+from app.services.provider_adapters import list_provider_adapters
 from app.services.gateway_service import call_upstream, stream_upstream, log_call, _is_private_url, _is_backend_upload_url
 from app.services.credit_service import deduct_credits
-from app.services.async_job_service import create_job, get_job, submit_and_run
+from app.services.async_job_service import create_job, get_job, submit_and_run, list_jobs_for_user
 from app.services.upload_service import save_upload_file, get_upload_file_path
 from app.schemas.model import AvailableModelOut, CatalogModelOut
 from app.schemas.log import CallLogOut
@@ -52,6 +53,12 @@ def get_models(
 def get_model_catalog(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Palmier-compatible model catalog."""
     return build_catalog(db, current_user)
+
+
+@router.get("/adapters")
+def list_adapters(current_user: User = Depends(get_current_user)):
+    """P2-10 多供应商格式适配器注册表（只读能力登记，供模型控制台展示）。"""
+    return {"providers": list_provider_adapters()}
 
 
 class QuoteRequest(BaseModel):
@@ -137,7 +144,7 @@ async def transcription_submit(
         "content_type": None,
     }
 
-    job_id = create_job("TRANSCRIPTION", request_body, str(current_user.id))
+    job_id = create_job("TRANSCRIPTION", request_body, str(current_user.id), kind="transcription")
     asyncio.create_task(_run_transcription_job(job_id, request_body, str(current_user.id)))
 
     job = get_job(job_id)
@@ -384,9 +391,29 @@ async def _persist_external_url(url: str, user_dir: Path, user_id: int | str, mo
         return None
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=True) as client:
-            response = await client.get(url)
-            if response.status_code >= 400:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=False) as client:
+            # R2-#4: 禁用自动跟随重定向，改为手动逐跳（≤3 跳）并每跳重新过 SSRF 检查，
+            # 防止上游返回 302 到内网/云元数据地址绕过预检。
+            from urllib.parse import urljoin
+            current_url: str = url
+            response: Optional[httpx.Response] = None
+            for _hop in range(3):
+                if _is_private_url(current_url):
+                    logger.warning("Blocked fetch of private URL (SSRF guard): %s", current_url)
+                    return None
+                response = await client.get(current_url)
+                if response.is_redirect:
+                    loc = response.headers.get("location")
+                    if not loc:
+                        return None
+                    current_url = urljoin(current_url, loc)
+                    continue
+                break
+            else:
+                # 连续 3 跳仍在重定向：放弃该 URL
+                logger.warning("Redirect hop limit exceeded, giving up: %s", url)
+                return None
+            if response is None or response.status_code >= 400:
                 return None
             content_type = response.headers.get("content-type", "").lower()
             ext = ".bin"
@@ -477,18 +504,9 @@ async def _run_gateway(
         raise HTTPException(status_code=404, detail=f"No active model for variable {variable_name}")
 
     modal_category = source.modal_category
-    # 定价参数：body 里的 size/duration/resolution/quality 等直接参与匹配；
-    # 文本模型额外估算 input_tokens（按字符数近似，档位是粗粒度的）。
-    from app.services.gateway_service import resolve_credits
-    pricing_params = dict(body)
-    if modal_category == "text":
-        text = ""
-        if isinstance(body.get("messages"), list):
-            text = json.dumps(body["messages"], ensure_ascii=False)
-        elif body.get("prompt"):
-            text = str(body["prompt"])
-        pricing_params["input_tokens"] = len(text) or 1
-    cost = resolve_credits(db, variable_name, pricing_params, modal_category)
+    # R2-#1: 统一计费口径 —— 与异步任务/报价共用 compute_cost（定价规则优先，COST_MAP 兜底）
+    from app.services.gateway_service import compute_cost
+    cost = compute_cost(db, variable_name, body, modal_category)
 
     try:
         deduct_credits(
@@ -500,6 +518,12 @@ async def _run_gateway(
         )
     except ValueError:
         raise HTTPException(status_code=402, detail="Insufficient credits")
+
+    # P0-2: 扣费成功后登记任务，供统一任务中心聚合
+    gen_job_id = create_job(variable_name, dict(body), str(current_user.id))
+    gen_job = get_job(gen_job_id)
+    if gen_job:
+        gen_job["cost_credits"] = cost
 
     request_id = str(uuid.uuid4())
     start = time.time()
@@ -561,6 +585,8 @@ async def _run_gateway(
             )
             return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+        if gen_job:
+            gen_job["status"] = "running"
         result = await call_upstream(source, body, endpoint_override=endpoint_override, user_id=str(current_user.id))
         latency = (time.time() - start) * 1000
 
@@ -571,6 +597,11 @@ async def _run_gateway(
             generated_files = [saved_url]
         else:
             generated_files = await _save_generated_media(result, current_user, modal_category)
+
+        if gen_job:
+            gen_job["status"] = "succeeded"
+            gen_job["result_urls"] = generated_files
+            gen_job["completed_at"] = _now_ms()
 
         log_call(
             db=db,
@@ -613,6 +644,10 @@ async def _run_gateway(
         })
 
     except Exception as e:
+        if gen_job:
+            gen_job["status"] = "failed"
+            gen_job["error_message"] = str(e)[:500]
+            gen_job["completed_at"] = _now_ms()
         latency = (time.time() - start) * 1000
         from app.services.credit_service import add_credits
         add_credits(
@@ -715,6 +750,67 @@ def gateway_status(
         "cost_credits": job.get("cost_credits"),
         "created_at": job.get("created_at"),
         "completed_at": job.get("completed_at"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unified task center: list + retry (P0-2)
+# Registered BEFORE /{variable_name} so that "jobs" is not captured as a
+# path variable by the generic generation route below.
+# ---------------------------------------------------------------------------
+
+@router.get("/jobs")
+def list_user_jobs(
+    current_user: User = Depends(get_current_user),
+):
+    """List the current user's generation tasks (sync + async jobs)."""
+    jobs = list_jobs_for_user(str(current_user.id))
+    return [
+        {
+            "job_id": j["id"],
+            "variable_name": j["variable_name"],
+            "status": j["status"],
+            "cost_credits": j.get("cost_credits"),
+            "result_urls": j.get("result_urls"),
+            "error_message": j.get("error_message"),
+            "created_at": j.get("created_at"),
+            "completed_at": j.get("completed_at"),
+        }
+        for j in jobs
+    ]
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_user_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Retry a task with its original request body (re-runs via async worker).
+
+    仅允许重试「failed」任务：失败任务已退款（净 0），重试重新计费是正确的；
+    对 queued/running/succeeded 任务重试会造成重复扣费或并发重复执行。
+    """
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if str(job.get("user_id")) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Not your job")
+    if job.get("status") != "failed":
+        raise HTTPException(status_code=400, detail="仅失败的任务可重试")
+    request_body = dict(job.get("request_body") or {})
+    request_body.pop("stream", None)  # 移除流式标记，重试按普通异步任务执行
+    # R2-#3: 按任务 kind 分发到对应执行器，避免转写任务被当成通用生成跑
+    kind = job.get("kind") or "generation"
+    new_id = create_job(job["variable_name"], request_body, str(current_user.id), kind=kind)
+    if kind == "transcription":
+        asyncio.create_task(_run_transcription_job(new_id, request_body, str(current_user.id)))
+    else:
+        asyncio.create_task(submit_and_run(new_id, job["variable_name"], request_body, str(current_user.id)))
+    new_job = get_job(new_id)
+    return {
+        "job_id": new_id,
+        "status": new_job["status"],
+        "created_at": new_job["created_at"],
     }
 
 

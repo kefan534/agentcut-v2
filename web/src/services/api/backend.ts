@@ -777,7 +777,7 @@ export async function adminDeleteVariable(id: number) {
     await backend.delete(`/admin/variables/${id}`);
 }
 
-// Agent config (通用 Agent + 短剧工坊智能体)
+// Agent config (通用 Agent + 制片工坊智能体)
 export type AgentConfigScope = {
     system_prompt: string | null;
     model_variable: string | null;
@@ -912,4 +912,68 @@ export function getBackendErrorMessage(error: unknown, fallback = "操作失败"
     }
     if (error instanceof Error) return error.message;
     return fallback;
+}
+
+export interface TaskItem {
+    job_id: string;
+    variable_name: string;
+    status: "queued" | "running" | "succeeded" | "failed";
+    cost_credits: number | null;
+    result_urls: string[] | null;
+    error_message: string | null;
+    created_at: number | null;
+    completed_at: number | null;
+}
+
+export async function listJobs(): Promise<TaskItem[]> {
+    const { data } = await backend.get<TaskItem[]>("/gateway/jobs");
+    return data;
+}
+
+export async function retryJob(jobId: string): Promise<{ job_id: string; status: string; created_at: number }> {
+    const { data } = await backend.post<{ job_id: string; status: string; created_at: number }>(`/gateway/jobs/${jobId}/retry`);
+    return data;
+}
+
+// Drama 创作工具（多模态实验室 / 分段提示词 / TTS 接口预留）
+export type MediaAnalyzeResult = {
+    kind: string;
+    model: string;
+    analysis: string;
+};
+
+export async function analyzeMedia(file: File, kind: string, prompt?: string) {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("kind", kind);
+    if (prompt) form.append("prompt", prompt);
+    const { data } = await backend.post<MediaAnalyzeResult>("/drama/media/analyze", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: 180_000,
+    });
+    return data;
+}
+
+export type SplitPromptsResult = {
+    model: string;
+    segments: number;
+    segment_seconds: number;
+    content: string;
+};
+
+export async function splitVideoPrompts(payload: { prompt: string; segments: number; segment_seconds: number; custom?: string }) {
+    const { data } = await backend.post<SplitPromptsResult>("/drama/prompts/split", payload, { timeout: 180_000 });
+    return data;
+}
+
+export type TtsGenerateResult = {
+    ok: boolean;
+    code: string;
+    model?: string;
+    message: string;
+};
+
+export async function generateTts(payload: { text: string; voice?: string; lang?: string }) {
+    const { data } = await backend.post<TtsGenerateResult>("/drama/tts/generate", payload, { timeout: 60_000 });
+    return data;
 }

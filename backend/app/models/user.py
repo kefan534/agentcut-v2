@@ -16,6 +16,8 @@ class User(Base):
     role = Column(String(16), nullable=False, default="user")  # user, admin
     level = Column(String(16), nullable=False, default="free")  # free, paid, vip
     credits = Column(Integer, nullable=False, default=0)
+    # 冻结积分：异步任务进行中被保留（reserve）的积分，成功后结算为已消费、失败后释放回可用。
+    frozen_balance = Column(Integer, nullable=False, default=0)
     status = Column(String(16), nullable=False, default="active")  # active, banned
     # P0: 用户级 Agent 模型选择持久化
     agent_model = Column(String(128), nullable=True)  # 用户选择的 Agent 模型 id

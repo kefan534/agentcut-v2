@@ -23,7 +23,7 @@ const TOOL_OPTIONS: Record<string, { label: string; tools: { value: string; labe
         ],
     },
     script_agent: {
-        label: "短剧工坊智能体",
+        label: "制片工坊智能体",
         tools: [
             { value: "list_novels", label: "列出小说章节" },
             { value: "get_novel_text", label: "读取章节原文" },
@@ -143,13 +143,13 @@ export function AdminAgentConfig() {
                 <Tag>重启不丢失 · 保存即时生效</Tag>
             </div>
             <p className="mb-4 text-sm text-stone-500 dark:text-stone-400">
-                在这里配置全站通用 Agent 与短剧工坊智能体的提示词、模型、工具与参数，无需改代码重新部署。
+                在这里配置全站通用 Agent 与制片工坊智能体的提示词、模型、工具与参数，无需改代码重新部署。
             </p>
             <Tabs
                 defaultActiveKey="global"
                 items={[
                     { key: "global", label: "通用 Agent", children: <ScopeForm scope="global" /> },
-                    { key: "script_agent", label: "短剧工坊智能体", children: <ScopeForm scope="script_agent" /> },
+                    { key: "script_agent", label: "制片工坊智能体", children: <ScopeForm scope="script_agent" /> },
                 ]}
             />
         </div>

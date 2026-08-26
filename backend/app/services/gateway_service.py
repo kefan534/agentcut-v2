@@ -22,14 +22,7 @@ from app.services.comfyui_service import comfyui_generate, comfyui_upload_image,
 from app.services.comfyui_workflows import MINIMAX_H3_REF2VIDEO_WORKFLOW
 from app.core.encryption import decrypt_api_key
 from app.services.model_service import resolve_source_for_variable
-
-
-COST_MAP = {
-    "text": 1,
-    "image": 5,
-    "audio": 3,
-    "video": 20,
-}
+from app.services.cost_map import COST_MAP
 
 
 def _match_conditions(conditions: Dict[str, Any], params: Dict[str, Any]) -> bool:
@@ -84,6 +77,23 @@ def resolve_credits(db: Session, variable_name: str, params: Dict[str, Any] | No
         if _match_conditions(rule.param_conditions, params):
             return int(rule.credits)
     return int(COST_MAP.get(modal_category or "text", 1))
+
+
+def compute_cost(db: Session, variable_name: str, body: Dict[str, Any] | None, modal_category: str) -> int:
+    """统一计费口径（R2-#1）：定价规则优先，COST_MAP 兜底。
+
+    同步路径 / 异步任务 / 报价接口必须共用本函数，避免「确认价 ≠ 实扣价」。
+    文本模型按字符数近似估算 input_tokens 参与定价档位匹配。
+    """
+    pricing_params = dict(body or {})
+    if modal_category == "text":
+        text = ""
+        if isinstance(pricing_params.get("messages"), list):
+            text = json.dumps(pricing_params["messages"], ensure_ascii=False)
+        elif pricing_params.get("prompt"):
+            text = str(pricing_params["prompt"])
+        pricing_params["input_tokens"] = len(text) or 1
+    return resolve_credits(db, variable_name, pricing_params, modal_category)
 
 
 _ENDPOINT_PATH_RE = re.compile(r"^[A-Za-z0-9_./-]*$")
@@ -147,48 +157,11 @@ def _is_fluxart_source(source: ApiSource) -> bool:
 def _is_private_url(url: str) -> bool:
     """True for localhost / private-LAN / metadata URLs that must not be fetched (SSRF guard).
 
-    Covers private IPv4/IPv6 ranges, loopback, link-local (incl. cloud metadata
-    169.254.169.254), and integer / hex IP variants via :mod:`ipaddress`.
+    逻辑已下沉至 ``app.services.url_safety``（leaf 模块），此处保留别名以兼容既有调用。
     """
-    try:
-        host = (urlparse(url).hostname or "").lower()
-    except Exception:
-        return True
-    if not host:
-        return True
+    from app.services.url_safety import is_private_url
 
-    # Hostname-level blocklist (also catches trailing-dot forms).
-    if host.rstrip(".") in ("localhost",) or host.endswith(".local") or host.endswith(".localhost"):
-        return True
-
-    # IP-level: normalize decimal / hex / octal / IPv6 forms through ipaddress.
-    candidate = host
-    try:
-        if host.isdigit():  # integer IPv4 form, e.g. 2130706433 == 127.0.0.1
-            candidate = str(ipaddress.ip_address(int(host)))
-        elif host.startswith(("0x", "0X")):  # hex IPv4 form, e.g. 0x7f000001 == 127.0.0.1
-            candidate = str(ipaddress.ip_address(int(host, 0)))
-    except (ValueError, OverflowError):
-        candidate = host
-    try:
-        ip = ipaddress.ip_address(candidate)
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_unspecified
-            or ip.is_multicast
-        )
-    except ValueError:
-        pass
-
-    # Regex fallback for non-IP host strings.
-    if re.match(r"^(127\.|10\.|192\.168\.|169\.254\.)", host) or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", host):
-        return True
-    if re.match(r"^0+\.0+\.0+\.0+$", host):  # 0.0.0.0
-        return True
-    return False
+    return is_private_url(url)
 
 
 def _is_backend_upload_url(url: str) -> bool:

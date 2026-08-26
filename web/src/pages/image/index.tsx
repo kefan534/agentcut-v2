@@ -1,6 +1,6 @@
 import { BookOpen, ClipboardPaste, FolderPlus, History as HistoryIcon, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { App, Button, Drawer, Input } from "antd";
+import { App, Button, Drawer, Input, Modal } from "antd";
 import { Link } from "react-router-dom";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -146,6 +146,34 @@ export default function ImagePage() {
         if (!isAiConfigReady(effectiveConfig, model)) {
             message.warning("暂无可用模型，请先在管理后台添加变量映射");
             return;
+        }
+
+        // P0-1: 生成前余额拦截 + 确认弹窗（agent 自动触发时跳过弹窗）
+        if (!agentTaskId) {
+            const balance = useUserStore.getState().user?.credits ?? 0;
+            let cost = creditCost;
+            if (cost == null) {
+                try {
+                    cost = await quoteCredits(model, { size: config.size, quality: config.quality, count: config.count, resolution: config.resolution }, "image");
+                } catch {
+                    cost = 0;
+                }
+            }
+            if (cost && balance < cost) {
+                message.error(`积分不足，本次生图约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
+                return;
+            }
+            const confirmed = await new Promise<boolean>((resolve) => {
+                Modal.confirm({
+                    title: "确认生成",
+                    content: `本次生图约消耗 ${cost ?? 0} credits，当前余额 ${balance}。确认生成？`,
+                    okText: "确认生成",
+                    cancelText: "取消",
+                    onOk: () => resolve(true),
+                    onCancel: () => resolve(false),
+                });
+            });
+            if (!confirmed) return;
         }
 
         const snapshot = buildRequestSnapshot();

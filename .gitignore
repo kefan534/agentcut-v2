@@ -2,6 +2,9 @@
 .env
 .env.local
 .env.production
+# 环境相关开发配置由各机器本地维护，不入库（2026-08-26 R3 同步改造）
+*.env.development
+*.env.development.local
 
 # python
 __pycache__/
@@ -10,6 +13,11 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+# 本地 pip 轮子缓存（不入库，6.8MB）
+backend/.wheels/
+
+# 本地 PostgreSQL 数据目录（40MB，绝不入库）
+pgdata/
 
 # node
 node_modules/

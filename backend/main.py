@@ -16,6 +16,28 @@ from app.api.admin.model_pricing import router as admin_model_pricing_router
 from app.api.admin.audit_logs import router as audit_logs_router
 from app.api.drama.router import router as drama_router
 
+# P1/P2 新模块（路由前缀已含 /api/v1 的，include 时不叠加前缀；前缀为 /drama 的叠加）
+try:
+    from app.api.billing.router import router as billing_router
+except ImportError:
+    billing_router = None
+try:
+    from app.api.diagnostics.router import router as diagnostics_router
+except ImportError:
+    diagnostics_router = None
+try:
+    from app.api.qa.router import router as qa_router
+except ImportError:
+    qa_router = None
+try:
+    from app.api.drama.export_import import router as export_import_router
+except ImportError:
+    export_import_router = None
+try:
+    from app.api.drama.creative_tools import router as creative_tools_router
+except ImportError:
+    creative_tools_router = None
+
 # Optional modules (may not exist in all deployments)
 try:
     from app.api.assets.router import router as assets_router
@@ -57,6 +79,18 @@ app.include_router(admin_model_pricing_router, prefix=settings.API_V1_PREFIX)
 app.include_router(audit_logs_router, prefix=settings.API_V1_PREFIX)
 app.include_router(drama_router, prefix=settings.API_V1_PREFIX)
 
+# P1/P2 新模块注册（前缀统一不带 /api/v1，此处叠加 API_V1_PREFIX）
+if billing_router:
+    app.include_router(billing_router, prefix=settings.API_V1_PREFIX)
+if diagnostics_router:
+    app.include_router(diagnostics_router, prefix=settings.API_V1_PREFIX)
+if qa_router:
+    app.include_router(qa_router, prefix=settings.API_V1_PREFIX)
+if export_import_router:
+    app.include_router(export_import_router, prefix=settings.API_V1_PREFIX)  # 前缀为 /drama
+if creative_tools_router:
+    app.include_router(creative_tools_router, prefix=settings.API_V1_PREFIX)  # 前缀为 /drama
+
 
 # Ensure upload directory exists (no public static mount; files served via /api/v1/upload)
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
@@ -77,6 +111,51 @@ async def _init_schema() -> None:
     except Exception as exc:  # pragma: no cover
         import logging
         logging.getLogger(__name__).warning("create_all failed: %s", exc)
+
+    # 幂等补列：为已存在的 users 表补 frozen_balance（create_all 不会 ALTER 已有表）。
+    try:
+        from sqlalchemy import text
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS frozen_balance INTEGER NOT NULL DEFAULT 0"
+            ))
+    except Exception as exc:  # pragma: no cover
+        import logging
+        logging.getLogger(__name__).warning("add frozen_balance column failed: %s", exc)
+
+    # R3-3: 锁定卡唯一约束迁移 —— 物理 UNIQUE 改「活跃行部分唯一索引」，
+    # 兼容软删除（旧表存在 drama_lock_card_project_id_key 时先删再建）。
+    try:
+        import logging
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE drama_lock_card DROP CONSTRAINT IF EXISTS drama_lock_card_project_id_key"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_drama_lock_card_active "
+                "ON drama_lock_card (project_id) WHERE is_deleted = 'N'"
+            ))
+    except Exception as exc:  # pragma: no cover
+        import logging
+        logging.getLogger(__name__).warning("lock_card unique index migration failed: %s", exc)
+
+    # R2-#2-B: 重启对账 —— 任务队列在内存字典中，进程重启即丢；
+    # 遗留的冻结余额必然是孤儿冻结（无对应 settle/release），全额释放回可用余额。
+    # 幂等：仅处理 frozen_balance <> 0 的行。必须在任务恢复（re-freeze）之前执行。
+    try:
+        import logging
+        with engine.begin() as conn:
+            result = conn.execute(text(
+                "UPDATE users SET credits = credits + frozen_balance, frozen_balance = 0 "
+                "WHERE frozen_balance <> 0"
+            ))
+        if result.rowcount:
+            logging.getLogger(__name__).info(
+                "reconciled %d user(s): released orphan frozen credits on startup", result.rowcount
+            )
+    except Exception as exc:  # pragma: no cover
+        import logging
+        logging.getLogger(__name__).warning("frozen_balance reconciliation failed: %s", exc)
 
     # P1: 恢复进程重启前未完成的视频生成任务（asyncio.create_task 易失，重启后继续）。
     await _recover_pending_video_jobs()

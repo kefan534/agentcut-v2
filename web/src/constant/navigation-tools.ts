@@ -1,4 +1,4 @@
-import { Clapperboard, FileText, ImagePlus, Maximize2, Video, Zap } from "lucide-react";
+import { Activity, BookMarked, Clapperboard, ClipboardCheck, FileText, ImagePlus, ListChecks, Maximize2, Video, Wallet, Zap } from "lucide-react";
 
 export const navigationTools = [
     {
@@ -33,8 +33,38 @@ export const navigationTools = [
     },
     {
         slug: "drama",
-        label: "短剧工坊",
+        label: "制片工坊",
         icon: Clapperboard,
+        adminOnly: false,
+    },
+    {
+        slug: "tasks",
+        label: "任务中心",
+        icon: ListChecks,
+        adminOnly: false,
+    },
+    {
+        slug: "cost-center",
+        label: "成本中心",
+        icon: Wallet,
+        adminOnly: false,
+    },
+    {
+        slug: "diagnostics",
+        label: "网络诊断",
+        icon: Activity,
+        adminOnly: false,
+    },
+    {
+        slug: "qa",
+        label: "质量中心",
+        icon: ClipboardCheck,
+        adminOnly: false,
+    },
+    {
+        slug: "lock-card",
+        label: "全局锁定卡",
+        icon: BookMarked,
         adminOnly: false,
     },
 ] as const;

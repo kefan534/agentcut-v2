@@ -175,4 +175,4 @@ def build_catalog(db: Session, user: User) -> List[CatalogModelOut]:
     return results
 
 
-from app.services.gateway_service import COST_MAP
+from app.services.cost_map import COST_MAP

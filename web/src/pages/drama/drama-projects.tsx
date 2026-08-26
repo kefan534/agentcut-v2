@@ -1,8 +1,9 @@
-import { Clapperboard, Edit3, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { App, Button, Empty, Form, Input, Modal, Select, Spin } from "antd";
+import { Clapperboard, Download, Edit3, Plus, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
+import { App, Button, Card, Empty, Form, Input, Modal, Select, Spin } from "antd";
 
 import {
+    backend,
     createDramaProject,
     deleteDramaProject,
     getBackendErrorMessage,
@@ -65,6 +66,57 @@ export default function DramaProjectsPage() {
     const [editing, setEditing] = useState<DramaProject | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
     const [saving, setSaving] = useState(false);
+
+    const [exportId, setExportId] = useState("");
+    const [importing, setImporting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleExport = useCallback(async () => {
+        const id = exportId.trim();
+        if (!id) {
+            message.warning("请输入要导出的项目 ID");
+            return;
+        }
+        try {
+            const res = await backend.get(`/drama/${id}/export`, { responseType: "blob" });
+            const blob = res.data as Blob;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${id}_export.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            message.success("导出成功");
+        } catch (e) {
+            message.error(getBackendErrorMessage(e, "导出失败"));
+        }
+    }, [exportId, message]);
+
+    const handleImportClick = useCallback(() => {
+        fileInputRef.current?.click();
+    }, []);
+
+    const handleImportFile = useCallback(
+        async (e: ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            setImporting(true);
+            try {
+                const text = await file.text();
+                const bundle = JSON.parse(text);
+                const { data } = await backend.post<{ project_id: string; name: string }>("/drama/import", bundle);
+                message.success(`导入成功，已创建项目「${data.name}」，请刷新查看`);
+            } catch (err) {
+                message.error(getBackendErrorMessage(err, "导入失败"));
+            } finally {
+                setImporting(false);
+                e.target.value = "";
+            }
+        },
+        [message],
+    );
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -162,6 +214,32 @@ export default function DramaProjectsPage() {
                     新建项目
                 </Button>
             </div>
+
+            <Card size="small" className="mt-4">
+                <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-sm font-medium text-stone-700 dark:text-stone-200">项目导入 / 导出</span>
+                    <Input
+                        placeholder="输入项目 ID 进行导出"
+                        value={exportId}
+                        onChange={(e) => setExportId(e.target.value)}
+                        allowClear
+                        style={{ width: 280 }}
+                    />
+                    <Button icon={<Download className="size-4" />} onClick={handleExport}>
+                        导出项目
+                    </Button>
+                    <Button icon={<Upload className="size-4" />} onClick={handleImportClick} loading={importing}>
+                        导入项目
+                    </Button>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="application/json,.json"
+                        className="hidden"
+                        onChange={handleImportFile}
+                    />
+                </div>
+            </Card>
 
             <div className="mt-6">
                 {loading ? (

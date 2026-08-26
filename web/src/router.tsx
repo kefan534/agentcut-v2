@@ -12,6 +12,7 @@ import MyRevenuePage from "@/pages/my-revenue";
 import ConfigPage from "@/pages/config";
 import HomePage from "@/pages/home";
 import HistoryPage from "@/pages/history";
+import TasksPage from "@/pages/tasks";
 import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
@@ -26,7 +27,13 @@ import DramaStoryboardPage from "@/pages/drama/drama-storyboard";
 import DramaTasksPage from "@/pages/drama/drama-tasks";
 import DramaArtStylePage from "@/pages/drama/drama-art-style";
 import DramaSettingsPage from "@/pages/drama/drama-settings";
+import DramaMediaLabPage from "@/pages/drama/drama-media-lab";
+import DramaPromptStudioPage from "@/pages/drama/drama-prompt-studio";
 import { DramaScriptAgentPage, DramaAudioPage } from "@/pages/drama/drama-module";
+import CostCenterPage from "@/pages/cost-center";
+import DiagnosticsPage from "@/pages/diagnostics";
+import QAPage from "@/pages/qa";
+import DramaLockCardPage from "@/pages/drama/lock-card";
 import { useUserStore } from "@/stores/use-user-store";
 
 function RequireAuth({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
@@ -53,6 +60,11 @@ export const router = createBrowserRouter([
             { path: "/image", element: <ImagePage /> },
             { path: "/video", element: <VideoPage /> },
             { path: "/history", element: <RequireAuth><HistoryPage /></RequireAuth> },
+            { path: "/tasks", element: <RequireAuth><TasksPage /></RequireAuth> },
+            { path: "/cost-center", element: <RequireAuth><CostCenterPage /></RequireAuth> },
+            { path: "/diagnostics", element: <RequireAuth><DiagnosticsPage /></RequireAuth> },
+            { path: "/qa", element: <RequireAuth><QAPage /></RequireAuth> },
+            { path: "/lock-card", element: <RequireAuth><DramaLockCardPage /></RequireAuth> },
             { path: "/assets", element: <RequireAuth><AssetsPage /></RequireAuth> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <RequireAuth><CanvasPage /></RequireAuth> },
@@ -78,6 +90,8 @@ export const router = createBrowserRouter([
                     { path: "audio", element: <DramaAudioPage /> },
                     { path: "storyboard", element: <DramaStoryboardPage /> },
                     { path: "production", element: <DramaStoryboardPage /> },
+                    { path: "prompt-studio", element: <DramaPromptStudioPage /> },
+                    { path: "media-lab", element: <DramaMediaLabPage /> },
                     { path: "settings", element: <DramaSettingsPage /> },
                 ],
             },

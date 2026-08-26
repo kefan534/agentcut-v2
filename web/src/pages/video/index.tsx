@@ -1,6 +1,6 @@
 import { BookOpen, ClipboardPaste, FolderPlus, History as HistoryIcon, Music2, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { App, Button, Drawer, Input } from "antd";
+import { App, Button, Drawer, Input, Modal } from "antd";
 import { nanoid } from "nanoid";
 import { Link } from "react-router-dom";
 
@@ -65,6 +65,30 @@ export default function VideoPage() {
     const model = effectiveConfig.videoModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
 
+    // P1-5: @N 素材引用 —— 三类参考按「图→视频→音频」全局编号，供提示词内 @N 引用
+    const promptSelRef = useRef<number | null>(null);
+    const promptAreaRef = useRef<HTMLTextAreaElement | null>(null);
+    const combinedRefs = [
+        ...references.map((item, index) => ({ id: item.id, label: seedanceReferenceLabel("image", index) })),
+        ...videoReferences.map((item, index) => ({ id: item.id, label: seedanceReferenceLabel("video", index) })),
+        ...audioReferences.map((item, index) => ({ id: item.id, label: seedanceReferenceLabel("audio", index) })),
+    ];
+    const insertReferenceToken = (token: string) => {
+        const position = promptSelRef.current ?? prompt.length;
+        const next = prompt.slice(0, position) + token + prompt.slice(position);
+        setPrompt(next);
+        const nextPos = position + token.length;
+        promptSelRef.current = nextPos;
+        // 插入后还原光标，避免焦点/光标跳到末尾
+        requestAnimationFrame(() => {
+            const el = promptAreaRef.current;
+            if (el) {
+                el.focus();
+                el.setSelectionRange(nextPos, nextPos);
+            }
+        });
+    };
+
     // 生成按钮积分预览
     const [creditCost, setCreditCost] = useState<number | null>(null);
     useEffect(() => {
@@ -95,14 +119,35 @@ export default function VideoPage() {
 
     const addReferences = async (files?: FileList | null) => {
         const selectedFiles = Array.from(files || []);
-        const unsupported = selectedFiles.filter((file) => !file.type.startsWith("image/") && !SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && !isSupportedAudioFile(file));
+        // 对标乐凡分桶约束：总数 ≤ 12（图 ≤9 / 视 ≤3 / 音 ≤3）
+        const currentTotal = references.length + videoReferences.length + audioReferences.length;
+        if (currentTotal >= 12) {
+            message.warning("参考素材总数最多 12 个（图≤9 / 视频≤3 / 音频≤3）");
+            return;
+        }
+        const remainingSlots = 12 - currentTotal;
+        const trimmedFiles = selectedFiles.slice(0, remainingSlots);
+        if (trimmedFiles.length < selectedFiles.length) message.warning("参考素材总数最多 12 个，超出部分已忽略");
+        // 音频不能单独使用：必须同时有至少一张参考图或一个参考视频
+        const hasVisual = references.length > 0 || videoReferences.length > 0;
+        const willAddAudio = trimmedFiles.some((file) => isSupportedAudioFile(file));
+        if (willAddAudio && !hasVisual) {
+            const willAddVisual = trimmedFiles.some(
+                (file) => file.type.startsWith("image/") || SEEDANCE_VIDEO_MIME_TYPES.includes(file.type),
+            );
+            if (!willAddVisual) {
+                message.warning("音频不能单独使用，请至少同时添加一张参考图或一个参考视频");
+                return;
+            }
+        }
+        const unsupported = trimmedFiles.filter((file) => !file.type.startsWith("image/") && !SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && !isSupportedAudioFile(file));
         if (unsupported.length) message.warning("已忽略不支持的参考资产，请使用图片、mp4/mov 视频或 mp3/wav 音频");
-        const imageFiles = selectedFiles.filter((file) => file.type.startsWith("image/") && file.size <= SEEDANCE_REFERENCE_LIMITS.imageMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.images - references.length);
-        const videoFiles = selectedFiles.filter((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size <= SEEDANCE_REFERENCE_LIMITS.videoMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.videos - videoReferences.length);
-        const audioFiles = selectedFiles.filter((file) => isSupportedAudioFile(file) && file.size <= SEEDANCE_REFERENCE_LIMITS.audioMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.audios - audioReferences.length);
-        if (selectedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) message.warning("已忽略超过 30MB 的参考图");
-        if (selectedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes)) message.warning("已忽略超过 200MB 的参考视频");
-        if (selectedFiles.some((file) => isSupportedAudioFile(file) && file.size > SEEDANCE_REFERENCE_LIMITS.audioMaxBytes)) message.warning("已忽略超过 15MB 的参考音频");
+        const imageFiles = trimmedFiles.filter((file) => file.type.startsWith("image/") && file.size <= SEEDANCE_REFERENCE_LIMITS.imageMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.images - references.length);
+        const videoFiles = trimmedFiles.filter((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size <= SEEDANCE_REFERENCE_LIMITS.videoMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.videos - videoReferences.length);
+        const audioFiles = trimmedFiles.filter((file) => isSupportedAudioFile(file) && file.size <= SEEDANCE_REFERENCE_LIMITS.audioMaxBytes).slice(0, SEEDANCE_REFERENCE_LIMITS.audios - audioReferences.length);
+        if (trimmedFiles.some((file) => file.type.startsWith("image/") && file.size > SEEDANCE_REFERENCE_LIMITS.imageMaxBytes)) message.warning("已忽略超过 30MB 的参考图");
+        if (trimmedFiles.some((file) => SEEDANCE_VIDEO_MIME_TYPES.includes(file.type) && file.size > SEEDANCE_REFERENCE_LIMITS.videoMaxBytes)) message.warning("已忽略超过 200MB 的参考视频");
+        if (trimmedFiles.some((file) => isSupportedAudioFile(file) && file.size > SEEDANCE_REFERENCE_LIMITS.audioMaxBytes)) message.warning("已忽略超过 15MB 的参考音频");
         const nextReferences = await Promise.all(
             imageFiles.map(async (file) => {
                 const image = await uploadImage(file);
@@ -179,9 +224,46 @@ export default function VideoPage() {
             window.location.href = `/login?redirect=${encodeURIComponent(current)}`;
             return;
         }
+
+        // P0-1: 生成前余额拦截 + 确认弹窗（agent 自动触发时跳过弹窗）
+        if (!agentTaskId) {
+            const balance = useUserStore.getState().user?.credits ?? 0;
+            let cost = creditCost;
+            if (cost == null) {
+                try {
+                    cost = await quoteCredits(model, { vquality: effectiveConfig.vquality, size: effectiveConfig.size, videoSeconds: effectiveConfig.videoSeconds }, "video");
+                } catch {
+                    cost = 0;
+                }
+            }
+            if (cost && balance < cost) {
+                message.error(`积分不足，本次视频生成约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
+                return;
+            }
+            const confirmed = await new Promise<boolean>((resolve) => {
+                Modal.confirm({
+                    title: "确认生成",
+                    content: `本次视频生成约消耗 ${cost ?? 0} credits，当前余额 ${balance}。确认生成？`,
+                    okText: "确认生成",
+                    cancelText: "取消",
+                    onOk: () => resolve(true),
+                    onCancel: () => resolve(false),
+                });
+            });
+            if (!confirmed) return;
+        }
+
         const snapshot = buildRequestSnapshot();
         if (!snapshot) {
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: "视频生成参数无效" });
+            return;
+        }
+
+        // 对标乐凡：音频不能单独使用（必须有参考图或参考视频配合）
+        if (snapshot.audioReferences.length > 0 && snapshot.references.length === 0 && snapshot.videoReferences.length === 0) {
+            const msg = "音频不能单独使用，请至少同时添加一张参考图或一个参考视频";
+            message.error(msg);
+            if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: msg });
             return;
         }
 
@@ -404,7 +486,23 @@ export default function VideoPage() {
                                             </Button>
                                         </div>
                                     </div>
-                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} maxLength={20000} showCount placeholder="描述镜头运动、主体动作、场景氛围和画面风格" />
+                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} onSelect={(event) => { promptSelRef.current = (event.target as HTMLTextAreaElement).selectionStart; }} ref={(node) => { promptAreaRef.current = (node as unknown as { resizableTextArea?: { textArea?: HTMLTextAreaElement } })?.resizableTextArea?.textArea ?? null; }} rows={5} maxLength={20000} showCount placeholder="描述镜头运动、主体动作、场景氛围和画面风格。可在下方点击 @N 引用已上传的参考素材" />
+                                    {combinedRefs.length > 0 ? (
+                                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                            <span className="text-[11px] text-stone-400">引用标记（点击插入）：</span>
+                                            {combinedRefs.map((item, index) => (
+                                                <button
+                                                    key={item.id}
+                                                    type="button"
+                                                    onClick={() => insertReferenceToken(`@${index + 1}`)}
+                                                    className="rounded border border-stone-300 bg-stone-50 px-1.5 py-0.5 text-[11px] text-stone-600 transition-colors hover:border-stone-900 hover:text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-300 dark:hover:border-stone-100 dark:hover:text-stone-100"
+                                                    title={`插入 @${index + 1}，对应「${item.label}」`}
+                                                >
+                                                    {item.label} · @{index + 1}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : null}
                                 </div>
 
                                 <ReferenceSection

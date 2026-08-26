@@ -35,6 +35,13 @@ const groups = [
         ],
     },
     {
+        label: "创作工具",
+        items: [
+            { to: "/drama/prompt-studio", label: "分段提示词" },
+            { to: "/drama/media-lab", label: "多模态实验室" },
+        ],
+    },
+    {
         label: "设置",
         items: [{ to: "/drama/settings", label: "模型与部署" }],
     },
@@ -43,7 +50,7 @@ const groups = [
 export function DramaSidebar() {
     return (
         <aside className="flex h-full w-60 shrink-0 flex-col gap-6 overflow-y-auto border-r border-sidebar-border bg-sidebar px-3 py-5">
-            <div className="px-2 text-sm font-semibold text-foreground">短剧工坊</div>
+            <div className="px-2 text-sm font-semibold text-foreground">制片工坊</div>
             {groups.map((g) => (
                 <div key={g.label} className="flex flex-col gap-1">
                     <div className="px-2 pb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{g.label}</div>

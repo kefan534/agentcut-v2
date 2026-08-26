@@ -120,14 +120,19 @@ export function seedanceReferenceLabel(kind: "image" | "video" | "audio", index:
 }
 
 export function buildSeedancePromptText(prompt: string, images: ReferenceImage[], videos: ReferenceVideo[], audios: ReferenceAudio[]) {
+    // R3-5: 图例编号必须与前端「@N 全局编号」（图→视频→音频合并排序）一致，
+    // 也与 content 数组顺序（buildSeedanceContent: image→video→audio）一致，
+    // 否则上游模型会把 @N 与 图片X/视频X 两套编号体系搞混。
+    const imageCount = images.length;
+    const videoCount = videos.length;
     const labels = [
-        ...images.map((_, index) => seedanceReferenceLabel("image", index)),
-        ...videos.map((_, index) => seedanceReferenceLabel("video", index)),
-        ...audios.map((_, index) => seedanceReferenceLabel("audio", index)),
+        ...images.map((_, index) => `@${index + 1}（图片${index + 1}）`),
+        ...videos.map((_, index) => `@${imageCount + index + 1}（视频${index + 1}）`),
+        ...audios.map((_, index) => `@${imageCount + videoCount + index + 1}（音频${index + 1}）`),
     ];
     const text = prompt.trim();
     if (!labels.length) return text;
-    return `参考资产编号：${labels.join("、")}。请按这些编号理解提示词中的图片、视频和音频引用。\n\n${text}`;
+    return `参考资产编号：${labels.join("、")}。提示词中的 @N 即对应上述第 N 个参考资产。请严格按编号理解图片、视频和音频引用。\n\n${text}`;
 }
 
 export function seedanceVideoReferenceError(videos: ReferenceVideo[]) {

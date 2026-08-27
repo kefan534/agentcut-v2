@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { Slider, Switch } from "antd";
+import { Select, Slider, Switch } from "antd";
 
 import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
@@ -22,7 +22,171 @@ import {
   normalizeAgnesSize,
 } from "@/lib/agnes-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import { type AiConfig } from "@/stores/use-config-store";
+import { OPENAI_RATIO_OPTIONS, formatSelectState } from "@/lib/video-capabilities";
+import { resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
+
+const FREE_SHORT_SIDE: Record<string, number> = { "480": 480, "720": 720, "1080": 1080 };
+
+/**
+ * 「清晰度 / 比例 / 尺寸」三级联动选择器 —— 各模型可选值来自官方文档（video-capabilities.ts 固化）。
+ * - upstream: 上游内部决定像素，第三级置灰
+ * - table:    官方「清晰度×比例」像素映射表，第三级只读展示唯一值
+ * - free:     第三级为 W×H（可编辑），随前两级自动计算；OpenAI 兼容通道独享
+ */
+function VideoFormatPicker({ config, model, onConfigChange, theme }: { config: AiConfig; model: string; onConfigChange: VideoSettingsPanelProps["onConfigChange"]; theme: CanvasTheme }) {
+    const requestConfig = resolveModelRequestConfig(config, model);
+    const { resolutions, ratios, sizeMode, sizeTable } = formatSelectState(requestConfig.model, requestConfig.apiFormat);
+
+    // —— 第一级：清晰度
+    const customResAllowed = sizeMode === "free";
+    const resInList = resolutions.some((item) => item.value === config.vquality);
+    const resIsCustom = customResAllowed && !resInList && /^\d+$/.test(config.vquality || "");
+    const resValue = resInList ? config.vquality : resIsCustom ? "custom" : (config.vquality || resolutions[0].value);
+
+    // —— 第二级：比例（free 模式从现有尺寸反推）
+    let ratioValue = config.size || "";
+    if (sizeMode === "free") {
+        if (/^\d+x\d+$/.test(ratioValue)) {
+            const [w, h] = ratioValue.split("x").map(Number);
+            const near = OPENAI_RATIO_OPTIONS.filter((item) => item.value !== "auto" && item.value !== "custom")
+                .map((item) => {
+                    const [rw, rh] = item.value === "21:9" ? [21, 9] : item.value === "16:9" ? [16, 9] : item.value === "9:16" ? [9, 16] : item.value === "4:3" ? [4, 3] : item.value === "3:4" ? [3, 4] : [1, 1];
+                    return { value: item.value, diff: Math.abs(w / h - rw / rh) };
+                })
+                .sort((a, b) => a.diff - b.diff)[0];
+            ratioValue = near && near.diff <= 0.08 ? near.value : "auto";
+        } else if (!OPENAI_RATIO_OPTIONS.some((item) => item.value === ratioValue)) {
+            ratioValue = "auto";
+        }
+    } else if (!ratios.some((item) => item.value === ratioValue)) {
+        ratioValue = ratios[0].value;
+    }
+
+    // —— 第三级：尺寸展示/取值
+    const tableRow = sizeTable ? (sizeTable[config.vquality] || {})[ratioValue] : undefined;
+    const shortSide = FREE_SHORT_SIDE[config.vquality] || (resIsCustom ? Number(config.vquality) || 1080 : 1080);
+    const freeSize = (() => {
+        if (/^\d+x\d+$/.test(config.size || "")) return config.size;
+        const map: Record<string, [number, number]> = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "3:4": [3, 4] };
+        const r = map[ratioValue];
+        if (!r) return "1280x720";
+        let w: number, h: number;
+        if (r[0] >= r[1]) { h = shortSide; w = Math.round((shortSide * r[0]) / r[1]); }
+        else { w = shortSide; h = Math.round((shortSide * r[1]) / r[0]); }
+        return `${w}x${h}`;
+    })();
+
+    const labelStyle = { color: theme.node.muted } as const;
+
+    return (
+        <>
+            <SettingGroup title="清晰度" color={theme.node.muted}>
+                <Select
+                    size="small"
+                    className="w-full"
+                    value={resValue}
+                    disabled={resolutions.length === 1}
+                    onChange={(value) => {
+                        if (value === "custom") onConfigChange("vquality", "1080");
+                        else onConfigChange("vquality", String(value));
+                    }}
+                    options={resolutions.map((item) => ({ value: item.value, label: item.label }))}
+                />
+                {resValue === "custom" ? (
+                    <input
+                        type="number"
+                        min={144}
+                        placeholder="输入短边像素，如 1440"
+                        className="h-8 w-full rounded-lg border bg-transparent px-2 text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                        value={config.vquality}
+                        onChange={(event) => onConfigChange("vquality", event.target.value)}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    />
+                ) : null}
+            </SettingGroup>
+            <SettingGroup title="比例" color={theme.node.muted}>
+                <Select
+                    size="small"
+                    className="w-full"
+                    value={ratioValue}
+                    onChange={(value) => {
+                        if (sizeMode === "free") {
+                            if (value === "auto") onConfigChange("size", "auto");
+                            else if (/^\d+:\d+$/.test(String(value))) {
+                                const shortSideValue = FREE_SHORT_SIDE[config.vquality] || (resIsCustom ? Number(config.vquality) || 1080 : 1080);
+                                const [rw, rh] = String(value).split(":").map(Number);
+                                let w: number, h: number;
+                                if (rw >= rh) { h = shortSideValue; w = Math.round((shortSideValue * rw) / rh); }
+                                else { w = shortSideValue; h = Math.round((shortSideValue * rh) / rw); }
+                                onConfigChange("size", `${w}x${h}`);
+                            } else onConfigChange("size", String(value));
+                        } else {
+                            onConfigChange("size", String(value));
+                        }
+                    }}
+                    options={(sizeMode === "free" ? OPENAI_RATIO_OPTIONS : ratios).map((item) => ({ value: item.value, label: item.label }))}
+                />
+            </SettingGroup>
+            <SettingGroup title="尺寸" color={theme.node.muted}>
+                {sizeMode === "upstream" ? (
+                    <Select size="small" className="w-full" disabled value="upstream" options={[{ value: "upstream", label: "由上游模型内部决定" }]} />
+                ) : sizeMode === "table" ? (
+                    tableRow ? (
+                        <input
+                            readOnly
+                            className="h-8 w-full rounded-lg border bg-stone-50 px-2 text-sm dark:bg-stone-900"
+                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                            value={tableRow.replace("x", " × ")}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                    ) : (
+                        <Select size="small" className="w-full" disabled value="adaptive" options={[{ value: "adaptive", label: "自适应：由上游根据输入决定" }]} />
+                    )
+                ) : ratioValue === "auto" ? (
+                    <input
+                        type="text"
+                        placeholder="W×H，如 1280x720"
+                        className="h-8 w-full rounded-lg border bg-transparent px-2 text-sm outline-none"
+                        style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                        value={config.size === "auto" || !/^\d+x\d+$/.test(config.size || "") ? "" : config.size}
+                        onChange={(event) => {
+                            const v = event.target.value.trim();
+                            if (/^\d+x\d+$/.test(v)) onConfigChange("size", v);
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onBlur={(event) => {
+                            const v = event.target.value.trim();
+                            if (!v) onConfigChange("size", "auto");
+                        }}
+                    />
+                ) : (
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="number"
+                            min={64}
+                            className="h-8 min-w-0 flex-1 rounded-lg border bg-transparent px-2 text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                            value={freeSize.split("x")[0]}
+                            onChange={(event) => onConfigChange("size", `${Number(event.target.value) || 1280}x${freeSize.split("x")[1]}`)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                        <span style={{ color: theme.node.muted }}>↔</span>
+                        <input
+                            type="number"
+                            min={64}
+                            className="h-8 min-w-0 flex-1 rounded-lg border bg-transparent px-2 text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                            value={freeSize.split("x")[1]}
+                            onChange={(event) => onConfigChange("size", `${freeSize.split("x")[0]}x${Number(event.target.value) || 720}`)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                    </div>
+                )}
+            </SettingGroup>
+        </>
+    );
+}
 
 const resolutionOptions = [
     { value: "720", label: "720p" },
@@ -78,43 +242,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
-                <SettingGroup title="清晰度" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {resolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
-                        <ResolutionInput value={resolution} theme={theme} onChange={(value) => onConfigChange("vquality", value)} />
-                    </div>
-                </SettingGroup>
-                <SettingGroup title="尺寸" color={theme.node.muted}>
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={size === "auto"} theme={theme} onChange={(value) => updateDimension("width", value)} />
-                        <span className="text-lg opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={size === "auto"} theme={theme} onChange={(value) => updateDimension("height", value)} />
-                    </div>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {sizeOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[78px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
-                                style={{ borderColor: size === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => onConfigChange("size", item.value)}
-                            >
-                                <SizePreview width={item.width} height={item.height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                                {item.value === "auto" ? null : (
-                                    <span className="text-[11px] leading-none opacity-55">
-                                        {item.value}
-                                    </span>
-                                )}
-                            </button>
-                        ))}
-                    </div>
-                </SettingGroup>
+                <VideoFormatPicker config={config} model={config.model || config.videoModel} onConfigChange={onConfigChange} theme={theme} />
                 <SettingGroup title="秒数" color={theme.node.muted}>
                     <DurationSlider value={Number(seconds) || 6} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
                 </SettingGroup>
@@ -135,37 +263,7 @@ function AgnesVideoSettingsPanel({ config, onConfigChange, theme, showTitle, cla
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
-                <SettingGroup title="分辨率" color={theme.node.muted}>
-                    {flash ? (
-                        <div className="text-xs opacity-60">Flash 固定 720P，不可调整</div>
-                    ) : (
-                        <div className="grid grid-cols-3 gap-2.5">
-                            {agnesResolutionOptions.map((item) => (
-                                <OptionPill key={item.value} selected={size === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                    {item.label}
-                                </OptionPill>
-                            ))}
-                        </div>
-                    )}
-                </SettingGroup>
-                <SettingGroup title="画幅" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {agnesRatioOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
-                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => onConfigChange("size", item.value)}
-                            >
-                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
-                            </button>
-                        ))}
-                    </div>
-                </SettingGroup>
+                <VideoFormatPicker config={config} model={config.model || config.videoModel} onConfigChange={onConfigChange} theme={theme} />
                 <SettingGroup title="时长" color={theme.node.muted}>
                     <DurationSlider value={Number(seconds)} min={4} max={12} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
                 </SettingGroup>
@@ -200,33 +298,7 @@ function SeedanceVideoSettingsPanel({ config, onConfigChange, theme, showTitle, 
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
-                <SettingGroup title="分辨率" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {seedanceResolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
-                    </div>
-                </SettingGroup>
-                <SettingGroup title="比例" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {seedanceRatioOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
-                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => onConfigChange("size", item.value)}
-                            >
-                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                                <span className="text-[10px] leading-none opacity-55">{item.value === "adaptive" ? "adaptive" : seedancePixelLabel(resolution, item.value)}</span>
-                            </button>
-                        ))}
-                    </div>
-                </SettingGroup>
+                <VideoFormatPicker config={config} model={config.model || config.videoModel} onConfigChange={onConfigChange} theme={theme} />
                 <SettingGroup title="时长" color={theme.node.muted}>
                     <div className="grid grid-cols-4 gap-2.5">
                         {seedanceDurationOptions.map((value) => (
@@ -257,33 +329,7 @@ function MetasoVideoSettingsPanel({ config, onConfigChange, theme, showTitle, cl
         <ImageSettingsTheme theme={theme}>
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
-                <SettingGroup title="分辨率" color={theme.node.muted}>
-                    <div className="grid grid-cols-2 gap-2.5">
-                        {metasoResolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={resolution === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
-                    </div>
-                </SettingGroup>
-                <SettingGroup title="比例" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-2.5">
-                        {metasoRatioOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
-                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => onConfigChange("size", item.value)}
-                            >
-                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
-                            </button>
-                        ))}
-                    </div>
-                </SettingGroup>
+                <VideoFormatPicker config={config} model={config.model || config.videoModel} onConfigChange={onConfigChange} theme={theme} />
                 <SettingGroup title="时长" color={theme.node.muted}>
                     <DurationSlider value={duration} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
                 </SettingGroup>

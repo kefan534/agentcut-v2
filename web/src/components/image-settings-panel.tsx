@@ -93,14 +93,20 @@ export function ImageSettingsPanel({ config, model: imageModelProp, onConfigChan
                 </div>
                 <div className="space-y-2.5">
                     <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
-                    <div className="grid grid-cols-4 gap-2.5">
-                        {Array.from({ length: quickCount }, (_, index) => index + 1).map((value) => (
-                            <OptionPill key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
-                                {value} 张
-                            </OptionPill>
-                        ))}
-                        <CountInput value={count} max={maxCount} theme={theme} onChange={(value) => onConfigChange("count", String(value || 1))} />
-                    </div>
+                    <label className="flex h-9 w-full items-center overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
+                        <input
+                            type="number"
+                            min={1}
+                            max={maxCount}
+                            className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            value={count || ""}
+                            onChange={(event) => onConfigChange("count", String(Math.max(1, Math.min(maxCount, Number(event.target.value) || 1))))}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                        <span className="pr-3" style={{ color: theme.node.muted }}>
+                            张
+                        </span>
+                    </label>
                 </div>
             </div>
         </ImageSettingsTheme>
@@ -165,23 +171,6 @@ function DimensionInput({ prefix, value, disabled, theme, alignToStep, onChange 
                 onKeyDown={(event) => {
                     if (event.key === "Enter") event.currentTarget.blur();
                 }}
-                onMouseDown={(event) => event.stopPropagation()}
-            />
-        </label>
-    );
-}
-
-function CountInput({ value, max, theme, onChange }: { value: number; max: number; theme: CanvasTheme; onChange: (value: number | null) => void }) {
-    return (
-        <label className="col-span-2 flex h-9 overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
-            <input
-                type="number"
-                min={1}
-                max={max}
-                className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                style={{ color: theme.node.text, WebkitTextFillColor: theme.node.text }}
-                value={value || ""}
-                onChange={(event) => onChange(Number(event.target.value) || null)}
                 onMouseDown={(event) => event.stopPropagation()}
             />
         </label>

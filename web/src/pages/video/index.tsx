@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { GenerationFeed } from "@/components/generation-chat";
+import { GenerationConfirmBubble } from "@/components/generation-confirm-bubble";
 import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoSizeLabel } from "@/components/video-settings-panel";
@@ -58,6 +59,31 @@ export default function VideoPage() {
     const [startedAt, setStartedAt] = useState(0);
     const [elapsedMs, setElapsedMs] = useState(0);
     const [autoRunToken, setAutoRunToken] = useState(0);
+    const [confirmOpen, setConfirmOpen] = useState(false);
+
+    // 生成按钮点击：登录检查 + 余额拦截后打开确认气泡（agent 自动触发不走此路径）
+    const handleGenerateClick = async () => {
+        if (!isAuthenticated) {
+            message.warning("请先登录");
+            const current = window.location.pathname + window.location.search;
+            window.location.href = `/login?redirect=${encodeURIComponent(current)}`;
+            return;
+        }
+        let cost = creditCost;
+        if (cost == null) {
+            try {
+                cost = await quoteCredits(model, { vquality: effectiveConfig.vquality, size: effectiveConfig.size, videoSeconds: effectiveConfig.videoSeconds }, "video");
+            } catch {
+                cost = 0;
+            }
+        }
+        const balance = useUserStore.getState().user?.credits ?? 0;
+        if (cost && balance < cost) {
+            message.error(`积分不足，本次视频生成约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
+            return;
+        }
+        setConfirmOpen(true);
+    };
     const videoCommand = useWorkbenchAgentStore((state) => state.videoCommand);
     const clearVideoCommand = useWorkbenchAgentStore((state) => state.clearVideoCommand);
     const updateAgentTask = useWorkbenchAgentStore((state) => state.updateTask);
@@ -294,34 +320,6 @@ export default function VideoPage() {
             const current = window.location.pathname + window.location.search;
             window.location.href = `/login?redirect=${encodeURIComponent(current)}`;
             return;
-        }
-
-        // P0-1: 生成前余额拦截 + 确认弹窗（agent 自动触发时跳过弹窗）
-        if (!agentTaskId) {
-            const balance = useUserStore.getState().user?.credits ?? 0;
-            let cost = creditCost;
-            if (cost == null) {
-                try {
-                    cost = await quoteCredits(model, { vquality: effectiveConfig.vquality, size: effectiveConfig.size, videoSeconds: effectiveConfig.videoSeconds }, "video");
-                } catch {
-                    cost = 0;
-                }
-            }
-            if (cost && balance < cost) {
-                message.error(`积分不足，本次视频生成约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
-                return;
-            }
-            const confirmed = await new Promise<boolean>((resolve) => {
-                Modal.confirm({
-                    title: "确认生成",
-                    content: `本次视频生成约消耗 ${cost ?? 0} credits，当前余额 ${balance}。确认生成？`,
-                    okText: "确认生成",
-                    cancelText: "取消",
-                    onOk: () => resolve(true),
-                    onCancel: () => resolve(false),
-                });
-            });
-            if (!confirmed) return;
         }
 
         const snapshot = buildRequestSnapshot();
@@ -709,9 +707,11 @@ export default function VideoPage() {
                                     <span>{modelOptionLabel(effectiveConfig, model)} · {normalizeResolution(effectiveConfig.vquality)}p · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s</span>
                                     <span>{formatDuration(elapsedMs)}</span>
                                 </div>
-                                <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} disabled={!canGenerate} onClick={() => void generate()}>
-                                    开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
-                                </Button>
+                                <GenerationConfirmBubble open={confirmOpen} onClose={() => setConfirmOpen(false)} onConfirm={() => void generate()} kind="视频" cost={creditCost} balance={useUserStore.getState().user?.credits ?? 0}>
+                                    <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} disabled={!canGenerate} onClick={() => void handleGenerateClick()}>
+                                        开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
+                                    </Button>
+                                </GenerationConfirmBubble>
                                 <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
                                     新建会话
                                 </Button>

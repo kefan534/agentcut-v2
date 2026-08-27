@@ -8,6 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/components/canvas/asset-picker-modal";
 import { GenerationFeed } from "@/components/generation-chat";
+import { GenerationConfirmBubble } from "@/components/generation-confirm-bubble";
 import { PageContainer } from "@/components/layout/page-container";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
@@ -105,6 +106,31 @@ export default function ImagePage() {
 
     // 生成按钮积分预览
     const [creditCost, setCreditCost] = useState<number | null>(null);
+    const [confirmOpen, setConfirmOpen] = useState(false);
+
+    // 生成按钮点击：登录检查 + 余额拦截后打开确认气泡（agent 自动触发不走此路径）
+    const handleGenerateClick = async () => {
+        if (!isAuthenticated) {
+            message.warning("请先登录");
+            const current = window.location.pathname + window.location.search;
+            window.location.href = `/login?redirect=${encodeURIComponent(current)}`;
+            return;
+        }
+        let cost = creditCost;
+        if (cost == null) {
+            try {
+                cost = await quoteCredits(model, { size: config.size, quality: config.quality, count: config.count, resolution: config.resolution }, "image");
+            } catch {
+                cost = 0;
+            }
+        }
+        const balance = useUserStore.getState().user?.credits ?? 0;
+        if (cost && balance < cost) {
+            message.error(`积分不足，本次生图约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
+            return;
+        }
+        setConfirmOpen(true);
+    };
     useEffect(() => {
         let cancelled = false;
         if (!model) { setCreditCost(null); return; }
@@ -175,43 +201,9 @@ export default function ImagePage() {
             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", error: "请输入生图提示词" });
             return;
         }
-        if (!isAuthenticated) {
-            message.warning("请先登录");
-            const current = window.location.pathname + window.location.search;
-            window.location.href = `/login?redirect=${encodeURIComponent(current)}`;
-            return;
-        }
         if (!isAiConfigReady(effectiveConfig, model)) {
             message.warning("暂无可用模型，请先在管理后台添加变量映射");
             return;
-        }
-
-        // P0-1: 生成前余额拦截 + 确认弹窗（agent 自动触发时跳过弹窗）
-        if (!agentTaskId) {
-            const balance = useUserStore.getState().user?.credits ?? 0;
-            let cost = creditCost;
-            if (cost == null) {
-                try {
-                    cost = await quoteCredits(model, { size: config.size, quality: config.quality, count: config.count, resolution: config.resolution }, "image");
-                } catch {
-                    cost = 0;
-                }
-            }
-            if (cost && balance < cost) {
-                message.error(`积分不足，本次生图约需 ${cost} credits，当前余额 ${balance}。请先获取积分后再生成。`);
-                return;
-            }
-            const confirmed = await new Promise<boolean>((resolve) => {
-                Modal.confirm({
-                    title: "确认生成",
-                    content: `本次生图约消耗 ${cost ?? 0} credits，当前余额 ${balance}。确认生成？`,
-                    okText: "确认生成",
-                    cancelText: "取消",
-                    onOk: () => resolve(true),
-                    onCancel: () => resolve(false),
-                });
-            });
-            if (!confirmed) return;
         }
 
         const snapshot = buildRequestSnapshot();
@@ -487,9 +479,11 @@ export default function ImagePage() {
                                     <span>{modelOptionLabel(effectiveConfig, model)}</span>
                                     <span>{formatDuration(elapsedMs)}</span>
                                 </div>
-                                <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
-                                    开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
-                                </Button>
+                                <GenerationConfirmBubble open={confirmOpen} onClose={() => setConfirmOpen(false)} onConfirm={() => void generate()} kind="生图" cost={creditCost} balance={useUserStore.getState().user?.credits ?? 0}>
+                                    <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void handleGenerateClick()}>
+                                        开始生成{creditCost != null ? `（${creditCost} 积分）` : ""}
+                                    </Button>
+                                </GenerationConfirmBubble>
                                 <Button className="mt-2" size="small" block icon={<Plus className="size-3.5" />} onClick={resetSession}>
                                     新建会话
                                 </Button>

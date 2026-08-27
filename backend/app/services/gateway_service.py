@@ -1343,8 +1343,10 @@ async def _poll_agnes_task(
                 payload = response.json()
                 status = str(payload.get("status", "")).lower()
                 if status == "completed":
+                    # 实测响应：URL 在顶层 url 字段；文档写的是 metadata.url，两处都兼容
                     metadata = payload.get("metadata") or {}
                     url = metadata.get("url") if isinstance(metadata, dict) else None
+                    url = url or payload.get("url") or payload.get("video_url") or payload.get("result_url")
                     if url:
                         return {"id": video_id, "status": "succeeded", "video_url": url, "result_url": url, "url": url}
                     return {"id": video_id, "status": "failed", "error": {"message": "任务成功但没有返回视频地址"}}

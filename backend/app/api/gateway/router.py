@@ -71,8 +71,10 @@ class QuoteRequest(BaseModel):
 def quote_credits(payload: QuoteRequest, db: Session = Depends(get_db)):
     """报价：根据模型变量名 + 参数，返回本次生成要扣的积分（供前端按钮预览）。"""
     from app.services.gateway_service import resolve_credits
-    credits = resolve_credits(db, payload.variable_name, payload.params, payload.modal_category)
-    return {"variable_name": payload.variable_name, "credits": credits}
+    # 前端可能传渠道编码名（backend::agnes-video-2.5-flash），剥前缀取真实变量名再匹配定价规则
+    variable_name = payload.variable_name.rsplit("::", 1)[-1]
+    credits = resolve_credits(db, variable_name, payload.params, payload.modal_category)
+    return {"variable_name": variable_name, "credits": credits}
 
 
 @router.get("/logs", response_model=list[CallLogOut])
@@ -513,16 +515,18 @@ async def _run_gateway(
 
     gen_job = None
     if not is_task_query:
-        try:
-            deduct_credits(
-                db=db,
-                user_id=current_user.id,
-                amount=cost,
-                reason="generation",
-                reference_id=str(uuid.uuid4()),
-            )
-        except ValueError:
-            raise HTTPException(status_code=402, detail="Insufficient credits")
+        # 0 积分模型（免费/限时免费）：跳过扣费（deduct_credits 不接受 0 金额），但正常登记任务
+        if cost > 0:
+            try:
+                deduct_credits(
+                    db=db,
+                    user_id=current_user.id,
+                    amount=cost,
+                    reason="generation",
+                    reference_id=str(uuid.uuid4()),
+                )
+            except ValueError:
+                raise HTTPException(status_code=402, detail="Insufficient credits")
 
         # P0-2: 扣费成功后登记任务，供统一任务中心聚合
         gen_job_id = create_job(variable_name, dict(body), str(current_user.id))

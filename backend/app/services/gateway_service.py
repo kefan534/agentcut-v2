@@ -1301,13 +1301,24 @@ async def _create_agnes_task(
     converted = _convert_agnes_request(source, body)
     url = _build_upstream_url(source, endpoint or source.endpoint_path or "/videos")
     timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        response = await client.post(url, headers=headers, json=converted)
-        if response.status_code >= 400:
-            err_text = response.text[:1000]
-            print(f"[agnes] POST {url} -> {response.status_code}\n  request_body={json.dumps(converted, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
-            raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
-        payload = response.json()
+    # Agnes 免费档限流：每分钟 1 次生成请求。429 时等待后自动重试一次，仍 429 则给友好提示
+    max_attempts = 2
+    for attempt in range(1, max_attempts + 1):
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            response = await client.post(url, headers=headers, json=converted)
+        if response.status_code == 429 and attempt < max_attempts:
+            wait_seconds = 65
+            print(f"[agnes] 429 rate limited, retrying in {wait_seconds}s", flush=True)
+            await asyncio.sleep(wait_seconds)
+            continue
+        break
+    if response.status_code >= 400:
+        err_text = response.text[:1000]
+        print(f"[agnes] POST {url} -> {response.status_code}\n  request_body={json.dumps(converted, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+        if response.status_code == 429:
+            raise RuntimeError("Agnes 生成请求过于频繁（上游限制每分钟 1 次），已自动重试仍被限流，请等待约 1 分钟后再生成")
+        raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
+    payload = response.json()
     print(f"[agnes] POST {url} -> {response.status_code} model={converted.get('model')} mode={converted.get('mode')}", flush=True)
 
     video_id = payload.get("video_id") or payload.get("id") or payload.get("task_id")

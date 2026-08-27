@@ -79,6 +79,8 @@ def upload_bytes(
         Key=key,
         Body=data,
         ContentType=content_type or "application/octet-stream",
+        # 参考素材需要被上游模型服务拉取，必须公有读
+        ACL="public-read",
     )
     return key
 

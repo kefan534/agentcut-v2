@@ -206,7 +206,8 @@ async def save_upload_file(
                 "storage_key": cos_url,
                 "filename": file.filename,
                 "content_type": file.content_type,
-                "url": cos_url,
+                # storage_key 是裸 COS key；url 给完整公网 URL 供上游模型直接拉取
+                "url": cos_service.public_url_for_key(cos_url),
                 "storage": "cos",
             }
         except Exception as e:

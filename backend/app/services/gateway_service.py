@@ -208,6 +208,23 @@ async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]
         if item.startswith(("http://", "https://")) and not _is_private_url(item):
             urls.append(item)
             continue
+        # AgentCut 后端上传的相对路径（/api/v1/upload/uploads/<uid>/<file>）：
+        # 文件就在本机磁盘（或 COS），直接读出来转成公网 COS URL
+        if item.startswith("/api/v1/upload/"):
+            try:
+                import mimetypes
+                from pathlib import Path as _Path
+                from app.services.upload_service import _file_path_for
+                storage_key = item[len("/api/v1/upload/"):]
+                file_path = _file_path_for(storage_key)
+                if file_path.exists() and file_path.is_file():
+                    data = file_path.read_bytes()
+                    mime = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
+                    ext = file_path.suffix or ".bin"
+                    urls.append(cos_service.public_url_for_key(cos_service.upload_bytes(data, "uploads", user_id, mime, ext)))
+            except Exception:
+                continue
+            continue
         # data URL → decode + upload to COS
         if item.startswith("data:"):
             try:
@@ -219,7 +236,7 @@ async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]
                     mime = "image/webp"
                 img_bytes = base64.b64decode(b64data)
                 ext = ".png" if "png" in mime else ".jpg" if "jpeg" in mime else ".webp"
-                cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, mime, ext)
+                cos_url = cos_service.public_url_for_key(cos_service.upload_bytes(img_bytes, "uploads", user_id, mime, ext))
                 urls.append(cos_url)
             except Exception:
                 continue
@@ -241,7 +258,7 @@ async def _fluxart_public_urls(value: Any, user_id: str = "system") -> List[str]
                         ct = resp.headers.get("content-type", "image/png")
                 ext_map = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
                 ext = ext_map.get(ct.split(";")[0].strip(), ".png")
-                cos_url = cos_service.upload_bytes(img_bytes, "uploads", user_id, ct, ext)
+                cos_url = cos_service.public_url_for_key(cos_service.upload_bytes(img_bytes, "uploads", user_id, ct, ext))
                 urls.append(cos_url)
             except Exception:
                 continue

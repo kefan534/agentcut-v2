@@ -31,7 +31,8 @@ export async function uploadImage(input: string | Blob, options?: { preferBacken
         try {
             const ext = blob.type.includes("png") ? "png" : blob.type.includes("webp") ? "webp" : blob.type.includes("gif") ? "gif" : "jpg";
             const uploaded = await backendApi.uploadFile(new File([blob], `image-${nanoid()}.${ext}`, { type: blob.type }));
-            const url = backendApi.getAssetUrl(uploaded.storage_key);
+            // 后端返回公网 URL（COS）时直接用；否则退回同域解析路径
+            const url = /^https?:\/\//.test(uploaded.url || "") ? uploaded.url! : backendApi.getAssetUrl(uploaded.storage_key);
             objectUrls.set(uploaded.storage_key, url);
             const meta = await readImageMeta(url);
             return { url, storageKey: uploaded.storage_key, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType };
@@ -83,7 +84,9 @@ function isBackendUrl(url: string) {
 }
 
 export async function imageToDataUrl(image: { url?: string; dataUrl?: string; storageKey?: string }) {
-    if (image.dataUrl) return image.dataUrl;
+    // 只有真正的 data: URL 才直接返回；dataUrl 字段可能是相对资源地址（如 /api/v1/upload/...），
+    // 原样返回会让上游收到不可访问的路径
+    if (image.dataUrl?.startsWith("data:")) return image.dataUrl;
 
     // Backend-persisted images: read through authenticated helper to avoid 401/CORS.
     if (image.storageKey && isBackendStorageKey(image.storageKey)) {

@@ -21,7 +21,8 @@ export async function uploadMediaFile(input: string | Blob, prefix = "file", opt
     if (preferBackend) {
         try {
             const uploaded = await backendApi.uploadFile(new File([blob], `${prefix}-${nanoid()}.${extensionFromMime(blob.type)}`, { type: blob.type }));
-            const url = backendApi.getAssetUrl(uploaded.storage_key);
+            // 后端返回公网 URL（COS）时直接用；否则退回同域解析路径
+            const url = /^https?:\/\//.test(uploaded.url || "") ? uploaded.url! : backendApi.getAssetUrl(uploaded.storage_key);
             objectUrls.set(uploaded.storage_key, url);
             const meta = blob.type.startsWith("video/") ? await readVideoMeta(url) : blob.type.startsWith("audio/") ? await readAudioMeta(url) : {};
             return { url, storageKey: uploaded.storage_key, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta };

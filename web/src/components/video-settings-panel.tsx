@@ -5,6 +5,7 @@ import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceDurationOptions, seedancePixelLabel, seedanceRatioOptions, seedanceResolutionOptions } from "@/lib/seedance-video";
 import {
   isMetasoVideoConfig,
+  isMetasoVideoModel,
   metasoDurationOptions,
   metasoRatioOptions,
   metasoResolutionOptions,
@@ -17,6 +18,7 @@ import {
   agnesResolutionOptions,
   isAgnesFlashModel,
   isAgnesVideoConfig,
+  isAgnesVideoModel,
   normalizeAgnesRatio,
   normalizeAgnesSeconds,
   normalizeAgnesSize,
@@ -37,11 +39,18 @@ function VideoFormatPicker({ config, model, onConfigChange, theme }: { config: A
     const requestConfig = resolveModelRequestConfig(config, model);
     const { resolutions, ratios, sizeMode, sizeTable } = formatSelectState(requestConfig.model, requestConfig.apiFormat);
 
-    // —— 第一级：清晰度
+    // —— 第一级：清晰度（存量值不在该模型文档档位内时，按文档归一化显示）
     const customResAllowed = sizeMode === "free";
-    const resInList = resolutions.some((item) => item.value === config.vquality);
-    const resIsCustom = customResAllowed && !resInList && /^\d+$/.test(config.vquality || "");
-    const resValue = resInList ? config.vquality : resIsCustom ? "custom" : (config.vquality || resolutions[0].value);
+    const rawRes = config.vquality || "";
+    const resInList = resolutions.some((item) => item.value === rawRes);
+    const resIsCustom = customResAllowed && !resInList && /^\d+$/.test(rawRes);
+    let resValue = resInList || resIsCustom ? rawRes : "";
+    if (!resValue) {
+        if (isMetasoVideoModel(requestConfig.model)) resValue = normalizeMetasoResolution(rawRes);
+        else if (isAgnesVideoModel(requestConfig.model)) resValue = normalizeAgnesSize(rawRes, isAgnesFlashModel(requestConfig.model));
+        else if (requestConfig.apiFormat === "ark") resValue = normalizeSeedanceResolution(rawRes);
+        else resValue = resolutions[0].value;
+    }
 
     // —— 第二级：比例（free 模式从现有尺寸反推）
     let ratioValue = config.size || "";

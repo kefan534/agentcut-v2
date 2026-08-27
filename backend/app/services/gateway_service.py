@@ -1298,7 +1298,7 @@ async def _create_agnes_task(
     endpoint: str,
 ) -> Dict[str, Any]:
     """Submit an Agnes video task; returns {"id": <video_id>, "status": "queued"}."""
-    converted = await _convert_agnes_request(source, body)
+    converted = _convert_agnes_request(source, body)
     url = _build_upstream_url(source, endpoint or source.endpoint_path or "/videos")
     timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:

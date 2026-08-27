@@ -1,5 +1,5 @@
 import { BookOpen, ClipboardPaste, FolderPlus, History as HistoryIcon, Music2, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent } from "react";
 import { App, Button, Drawer, Input, Modal, Select } from "antd";
 import { nanoid } from "nanoid";
 import { Link } from "react-router-dom";
@@ -240,11 +240,50 @@ export default function VideoPage() {
                     return { id: nanoid(), name: `clipboard-${index + 1}.png`, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey };
                 }),
             );
-            setReferences((value) => [...value, ...nextReferences].slice(0, SEEDANCE_REFERENCE_LIMITS.images));
+            setReferences((value) => [...value, ...nextReferences].slice(0, referenceCaps.images));
             message.success(`已读取 ${nextReferences.length} 张参考图`);
         } catch {
             message.error("剪切板里没有可读取的图片");
         }
+    };
+
+    /** 上传单张图片并加入参考图列表；返回成功与否 */
+    const addSingleImageReference = async (blob: Blob, name: string): Promise<ReferenceImage | null> => {
+        if (references.length >= referenceCaps.images) {
+            message.warning(`参考图最多 ${referenceCaps.images} 张`);
+            return null;
+        }
+        const stored = await uploadImage(blob);
+        const image: ReferenceImage = { id: nanoid(), name, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey };
+        setReferences((value) => [...value, image].slice(0, referenceCaps.images));
+        return image;
+    };
+
+    /**
+     * 提示词框内 Ctrl/Cmd+V 粘贴图片：图片进「参考图」区，并在光标处插入 @N 引用。
+     * 含图片时拦截默认粘贴；纯文本粘贴不受影响。
+     */
+    const handlePromptPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+        const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith("image/"));
+        if (!files.length) return;
+        event.preventDefault();
+        void (async () => {
+            if (!supportsModality(capabilities, "reference")) {
+                message.warning("当前模型不支持参考图，粘贴的图片已忽略");
+                return;
+            }
+            if (modality !== "reference") setModality("reference");
+            const startIndex = references.length;
+            const tokens: string[] = [];
+            for (let index = 0; index < files.length; index += 1) {
+                const added = await addSingleImageReference(files[index], files[index].name || `clipboard-${startIndex + index + 1}.png`);
+                if (added) tokens.push(`@${startIndex + tokens.length + 1}`);
+            }
+            if (tokens.length) {
+                insertReferenceToken(tokens.join(" "));
+                message.success(`已添加 ${tokens.length} 张参考图，并在提示词中插入 ${tokens.join(" ")}`);
+            }
+        })();
     };
 
     const generate = async () => {
@@ -641,7 +680,7 @@ export default function VideoPage() {
                                             </Button>
                                         </div>
                                     </div>
-                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} onSelect={(event) => { promptSelRef.current = (event.target as HTMLTextAreaElement).selectionStart; }} ref={(node) => { promptAreaRef.current = (node as unknown as { resizableTextArea?: { textArea?: HTMLTextAreaElement } })?.resizableTextArea?.textArea ?? null; }} rows={5} maxLength={20000} showCount placeholder="描述镜头运动、主体动作、场景氛围和画面风格。参考模式下可在上方点击 @N 引用已上传的素材" />
+                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={handlePromptPaste} onSelect={(event) => { promptSelRef.current = (event.target as HTMLTextAreaElement).selectionStart; }} ref={(node) => { promptAreaRef.current = (node as unknown as { resizableTextArea?: { textArea?: HTMLTextAreaElement } })?.resizableTextArea?.textArea ?? null; }} rows={5} maxLength={20000} showCount placeholder="描述镜头运动、主体动作、场景氛围和画面风格。参考模式下可在上方点击 @N 引用已上传的素材，也可直接 Ctrl+V 粘贴图片" />
                                     {modality === "reference" && combinedRefs.length > 0 ? (
                                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                             <span className="text-[11px] text-stone-400">引用标记（点击插入）：</span>

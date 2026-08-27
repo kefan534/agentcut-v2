@@ -1155,6 +1155,22 @@ async def _call_metaso_minimax_h3(
 
 _AGNES_HOST_MARKERS = ("agnes-ai.cn",)
 
+# Agnes 上游限流：每分钟 1 次生成请求。服务端全局排队，确保相邻两次创建请求间隔 ≥ 65s。
+# 后端为单进程 uvicorn，进程内 asyncio 锁即可覆盖全部请求。
+_agnes_last_create_ts: float = 0.0
+_agnes_create_lock = asyncio.Lock()
+
+
+async def _agnes_throttle(min_interval: float = 65.0) -> None:
+    """Queue Agnes creation requests so they are submitted at most once per minute."""
+    global _agnes_last_create_ts
+    async with _agnes_create_lock:
+        wait = _agnes_last_create_ts + min_interval - time.monotonic()
+        if wait > 0:
+            print(f"[agnes] throttle: queuing create for {wait:.1f}s", flush=True)
+            await asyncio.sleep(wait)
+        _agnes_last_create_ts = time.monotonic()
+
 
 def _is_agnes_source(source: ApiSource) -> bool:
     """True if this source points at the Agnes Video API."""
@@ -1298,6 +1314,8 @@ async def _create_agnes_task(
     endpoint: str,
 ) -> Dict[str, Any]:
     """Submit an Agnes video task; returns {"id": <video_id>, "status": "queued"}."""
+    # 服务端排队：满足上游"每分钟 1 次"限流，用户无需手动等待
+    await _agnes_throttle()
     converted = _convert_agnes_request(source, body)
     url = _build_upstream_url(source, endpoint or source.endpoint_path or "/videos")
     timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)

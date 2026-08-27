@@ -47,6 +47,7 @@ sshpass -p "$SERVER_PASS" rsync -avz --delete \
     --exclude='*.pyc' \
     --exclude='.env' \
     --exclude='uploads' \
+    --exclude='backups/' \
     "$LOCAL_DIR/" "${SERVER_USER}@${SERVER_IP}:${REMOTE_DIR}/"
 
 # 3. 服务器端构建并重启

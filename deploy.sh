@@ -49,7 +49,7 @@ echo '=== 构建前端 ==='
 cd ${REPO_DIR}/web
 rm -rf node_modules package-lock.json
 npm install --legacy-peer-deps
-VITE_BACKEND_URL=http://${SERVER_IP} npm run build
+VITE_BACKEND_URL= npm run build
 
 echo '=== 重载 nginx ==='
 nginx -t && systemctl reload nginx

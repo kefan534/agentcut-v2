@@ -283,7 +283,7 @@ async def split_video_prompts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """把一句话创意拆成多段（≤15s/段）视频生成提示词，对标乐凡「导演自动规划」。"""
+    """把一句话创意拆成多段（≤15s/段）视频生成提示词，便于分段生成后合成长片。"""
     variable_name, source = _resolve_text_variable(db, current_user)
     if not source:
         raise HTTPException(status_code=400, detail="未配置文本模型（TEXT_MODEL），请先在管理后台配置模型路由")

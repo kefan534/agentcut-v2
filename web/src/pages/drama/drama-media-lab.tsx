@@ -63,7 +63,7 @@ export default function DramaMediaLabPage() {
             <div className="flex items-start justify-between gap-4">
                 <div className="flex flex-col gap-1">
                     <h1 className="text-xl font-medium text-foreground">多模态实验室</h1>
-                    <p className="text-sm text-muted-foreground">上传图片 / 视频 / 音乐，AI 拆解后给出可复刻的提示词（对标乐凡 Omni 分析）</p>
+                    <p className="text-sm text-muted-foreground">上传图片 / 视频 / 音乐，AI 拆解后给出可复刻的提示词</p>
                 </div>
             </div>
 

@@ -99,7 +99,7 @@ PROVIDER_ADAPTERS: Dict[str, ProviderAdapter] = {
         supported_types=["image"],
         request_format="txt2img（prompt + steps + cfg）",
         response_format="base64 PNG",
-        notes="乐凡已弃用，AgentCut 暂以 EdgeOne/ Agnes 为主。",
+        notes="已弃用，AgentCut 暂以 EdgeOne / Agnes 为主。",
         # 标记弃用
     ),
     "agnes_video": ProviderAdapter(

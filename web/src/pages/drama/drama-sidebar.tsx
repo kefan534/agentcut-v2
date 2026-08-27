@@ -7,6 +7,7 @@ const groups = [
         label: "工作台",
         items: [
             { to: "/drama/projects", label: "项目" },
+            { to: "/drama/lock-card", label: "全局锁定卡" },
             { to: "/drama/tasks", label: "任务看板" },
         ],
     },

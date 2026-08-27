@@ -64,7 +64,7 @@ export const router = createBrowserRouter([
             { path: "/cost-center", element: <RequireAuth><CostCenterPage /></RequireAuth> },
             { path: "/diagnostics", element: <RequireAuth adminOnly><DiagnosticsPage /></RequireAuth> },
             { path: "/qa", element: <RequireAuth adminOnly><QAPage /></RequireAuth> },
-            { path: "/lock-card", element: <RequireAuth><DramaLockCardPage /></RequireAuth> },
+            { path: "/lock-card", element: <Navigate to="/drama/lock-card" replace /> },
             { path: "/assets", element: <RequireAuth><AssetsPage /></RequireAuth> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <RequireAuth><CanvasPage /></RequireAuth> },
@@ -80,6 +80,7 @@ export const router = createBrowserRouter([
                 children: [
                     { index: true, element: <Navigate to="/drama/projects" replace /> },
                     { path: "projects", element: <DramaProjectsPage /> },
+                    { path: "lock-card", element: <DramaLockCardPage /> },
                     { path: "tasks", element: <DramaTasksPage /> },
                     { path: "script", element: <DramaScriptPage /> },
                     { path: "script-agent", element: <DramaScriptAgentPage /> },

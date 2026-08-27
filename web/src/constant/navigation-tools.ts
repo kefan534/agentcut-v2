@@ -1,4 +1,4 @@
-import { BookMarked, Clapperboard, FileText, ImagePlus, ListChecks, Maximize2, Video, Zap } from "lucide-react";
+import { Clapperboard, FileText, ImagePlus, ListChecks, Maximize2, Video, Zap } from "lucide-react";
 
 export const navigationTools = [
     {
@@ -41,12 +41,6 @@ export const navigationTools = [
         slug: "tasks",
         label: "任务中心",
         icon: ListChecks,
-        adminOnly: false,
-    },
-    {
-        slug: "lock-card",
-        label: "全局锁定卡",
-        icon: BookMarked,
         adminOnly: false,
     },
 ] as const;

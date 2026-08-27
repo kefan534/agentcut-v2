@@ -91,22 +91,42 @@ export function ImageSettingsPanel({ config, model: imageModelProp, onConfigChan
                         <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
                     </span>
                 </div>
-                <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
                     <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
-                    <label className="flex h-9 w-full items-center overflow-hidden rounded-full border text-sm" style={{ borderColor: theme.node.stroke, color: theme.node.text }}>
+                    <div className="flex h-8 items-center overflow-hidden rounded-lg border" style={{ borderColor: theme.node.stroke }}>
+                        <button
+                            type="button"
+                            aria-label="减少张数"
+                            className="grid h-full w-8 cursor-pointer place-items-center text-base leading-none transition hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
+                            style={{ color: theme.node.text }}
+                            disabled={count <= 1}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={() => onConfigChange("count", String(Math.max(1, count - 1)))}
+                        >
+                            −
+                        </button>
                         <input
                             type="number"
                             min={1}
                             max={maxCount}
-                            className="min-w-0 flex-1 bg-transparent px-3 text-center outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            className="h-full w-10 border-x bg-transparent text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
                             value={count || ""}
                             onChange={(event) => onConfigChange("count", String(Math.max(1, Math.min(maxCount, Number(event.target.value) || 1))))}
                             onMouseDown={(event) => event.stopPropagation()}
                         />
-                        <span className="pr-3" style={{ color: theme.node.muted }}>
-                            张
-                        </span>
-                    </label>
+                        <button
+                            type="button"
+                            aria-label="增加张数"
+                            className="grid h-full w-8 cursor-pointer place-items-center text-base leading-none transition hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-30"
+                            style={{ color: theme.node.text }}
+                            disabled={count >= maxCount}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={() => onConfigChange("count", String(Math.min(maxCount, count + 1)))}
+                        >
+                            +
+                        </button>
+                    </div>
                 </div>
             </div>
         </ImageSettingsTheme>

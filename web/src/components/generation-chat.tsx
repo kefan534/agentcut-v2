@@ -304,21 +304,42 @@ function ResultArea({
         );
     }
 
+    const removeButton = (url: string) =>
+        onRemoveResult ? (
+            <button
+                type="button"
+                onClick={() => onRemoveResult(session.id, url)}
+                className="absolute right-2 top-2 z-10 flex size-6 items-center justify-center rounded-full bg-black/50 text-white opacity-70 transition-opacity hover:bg-red-500 hover:opacity-100"
+                aria-label="删除该结果"
+            >
+                <X className="size-3.5" />
+            </button>
+        ) : null;
+
+    // 单张结果：自适应撑满卡片宽度（保持原始比例，不裁切）
+    if (urls.length === 1) {
+        return (
+            <Image.PreviewGroup>
+                <div className="relative w-full">
+                    {removeButton(urls[0])}
+                    <Image
+                        src={urls[0]}
+                        alt="生成结果"
+                        width="100%"
+                        className="w-full rounded-lg object-contain"
+                        placeholder={<div className="size-full min-h-[200px] animate-pulse bg-stone-200 dark:bg-stone-800" />}
+                    />
+                </div>
+            </Image.PreviewGroup>
+        );
+    }
+
     return (
         <Image.PreviewGroup>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                 {urls.map((url, index) => (
                     <div key={`${session.id}-${index}`} className="relative aspect-square w-full">
-                        {onRemoveResult ? (
-                            <button
-                                type="button"
-                                onClick={() => onRemoveResult(session.id, url)}
-                                className="absolute right-2 top-2 z-10 flex size-6 items-center justify-center rounded-full bg-black/50 text-white opacity-70 transition-opacity hover:bg-red-500 hover:opacity-100"
-                                aria-label="删除该结果"
-                            >
-                                <X className="size-3.5" />
-                            </button>
-                        ) : null}
+                        {removeButton(url)}
                         <Image
                             src={url}
                             alt="生成结果"

@@ -14,6 +14,7 @@ import { AdminAgentConfig } from "@/pages/admin/admin-agent-config";
 import AdminSkillReview from "@/pages/admin-skill-review";
 import AdminPricing from "@/pages/admin/admin-pricing";
 import AdminAuditLogs from "@/pages/admin-audit-logs";
+import DiagnosticsPage from "@/pages/diagnostics";
 
 const TABS = [
     { key: "dashboard", label: "数据总览" },
@@ -23,6 +24,7 @@ const TABS = [
     { key: "pricing", label: "积分策略" },
     { key: "users", label: "用户管理" },
     { key: "logs", label: "调用日志" },
+    { key: "diagnostics", label: "网络诊断" },
     { key: "skills", label: "Skill 审核" },
     { key: "audit-logs", label: "审计日志" },
     { key: "config", label: "设置" },
@@ -36,6 +38,7 @@ const TAB_CONTENT: Record<string, React.ReactNode> = {
     pricing: <AdminPricing />,
     users: <AdminUsers />,
     logs: <AdminLogs />,
+    diagnostics: <DiagnosticsPage />,
     skills: <AdminSkillReview />,
     "audit-logs": <AdminAuditLogs />,
     config: <AppConfigPanel />,

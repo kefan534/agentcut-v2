@@ -62,7 +62,7 @@ export const router = createBrowserRouter([
             { path: "/history", element: <RequireAuth><HistoryPage /></RequireAuth> },
             { path: "/tasks", element: <RequireAuth><TasksPage /></RequireAuth> },
             { path: "/cost-center", element: <RequireAuth><CostCenterPage /></RequireAuth> },
-            { path: "/diagnostics", element: <RequireAuth><DiagnosticsPage /></RequireAuth> },
+            { path: "/diagnostics", element: <RequireAuth adminOnly><DiagnosticsPage /></RequireAuth> },
             { path: "/qa", element: <RequireAuth><QAPage /></RequireAuth> },
             { path: "/lock-card", element: <RequireAuth><DramaLockCardPage /></RequireAuth> },
             { path: "/assets", element: <RequireAuth><AssetsPage /></RequireAuth> },

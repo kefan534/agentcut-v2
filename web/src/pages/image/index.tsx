@@ -1,6 +1,6 @@
 import { BookOpen, ClipboardPaste, FolderPlus, History as HistoryIcon, Plus, SlidersHorizontal, Sparkles, Trash2, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { App, Button, Drawer, Input, Modal } from "antd";
+import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { App, Button, Drawer, Input, Modal, Select } from "antd";
 import { Link } from "react-router-dom";
 
 import { ImageSettingsPanel } from "@/components/image-settings-panel";
@@ -11,6 +11,7 @@ import { GenerationFeed } from "@/components/generation-chat";
 import { PageContainer } from "@/components/layout/page-container";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { imageReferenceLabel } from "@/lib/image-reference-prompt";
+import { imageCapabilitiesFor } from "@/lib/image-model-capabilities";
 import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
@@ -40,6 +41,7 @@ export default function ImagePage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepthRef = useRef(0);
     const config = useConfigStore((state) => state.config);
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const isAuthenticated = useUserStore((state) => state.isAuthenticated);
     const effectiveConfig = useEffectiveConfig();
     const updateConfig = useConfigStore((state) => state.updateConfig);
@@ -66,6 +68,39 @@ export default function ImagePage() {
 
     const model = effectiveConfig.imageModel || effectiveConfig.model;
     const canGenerate = Boolean(prompt.trim());
+    // —— 左栏联动：模型 → 输入模态 → 参考图显隐（对齐视频创作台机制）
+    const [modality, setModality] = useState<"text" | "reference">("text");
+    const imageCaps = imageCapabilitiesFor(effectiveConfig, model);
+    useEffect(() => {
+        setReferences((value) => value.slice(0, imageCaps.refMax));
+    }, [imageCaps.refMax]);
+
+    /** 上传单张图片并加入参考图列表 */
+    const addSingleImageReference = async (blob: Blob, name: string): Promise<boolean> => {
+        if (references.length >= imageCaps.refMax) {
+            message.warning(`参考图最多 ${imageCaps.refMax} 张`);
+            return false;
+        }
+        const image = await uploadImage(blob);
+        setReferences((value) => [...value, { id: nanoid(), name, type: image.mimeType, dataUrl: image.url, storageKey: image.storageKey }]);
+        return true;
+    };
+
+    /** 提示词框内 Ctrl/Cmd+V 粘贴图片：自动切参考生成 + 加参考图 */
+    const handlePromptPaste = (event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+        const files = Array.from(event.clipboardData?.files || []).filter((file) => file.type.startsWith("image/"));
+        if (!files.length) return;
+        event.preventDefault();
+        void (async () => {
+            if (modality !== "reference") setModality("reference");
+            let added = 0;
+            for (const file of files) {
+                const ok = await addSingleImageReference(file, file.name || `clipboard-${Date.now()}.png`);
+                if (ok) added += 1;
+            }
+            if (added) message.success(`已添加 ${added} 张参考图（参考生成模式）`);
+        })();
+    };
     const generationCount = Math.max(1, Math.min(10, Number(config.count) || 1));
 
     // 生成按钮积分预览
@@ -97,7 +132,10 @@ export default function ImagePage() {
     }, []);
 
     const addReferences = async (files?: FileList | null) => {
-        const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/"));
+        const imageFiles = Array.from(files || []).filter((file) => file.type.startsWith("image/")).slice(0, imageCaps.refMax - references.length);
+        if (imageFiles.length < Array.from(files || []).filter((file) => file.type.startsWith("image/")).length) {
+            message.warning(`参考图最多 ${imageCaps.refMax} 张，超出部分已忽略`);
+        }
         const nextReferences = await Promise.all(
             imageFiles.map(async (file) => {
                 const image = await uploadImage(file);
@@ -348,22 +386,25 @@ export default function ImagePage() {
                     <main className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
                         <aside className="thin-scrollbar flex min-h-0 flex-col overflow-y-auto rounded-lg border border-stone-200 bg-card p-4 shadow-sm dark:border-stone-800">
                             <div className="space-y-4">
-                                <div>
-                                    <div className="mb-2 flex items-center justify-between gap-3">
-                                        <span className="text-sm font-semibold">提示词</span>
-                                        <div className="flex gap-2">
-                                            <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
-                                                提示词库
-                                            </Button>
-                                            <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
-                                                我的资产
-                                            </Button>
-                                        </div>
-                                    </div>
-                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} maxLength={20000} showCount placeholder="描述画面主体、风格、构图、光线和用途" />
-                                </div>
+                                <label className="block">
+                                    <span className="mb-1.5 block text-sm font-semibold">模型</span>
+                                    <ModelPicker config={effectiveConfig} value={model} onChange={(value) => updateConfig("imageModel", value)} capability="image" fullWidth onMissingConfig={() => openConfigDialog(false)} />
+                                </label>
 
-                                <div className="min-w-0">
+                                <label className="block">
+                                    <span className="mb-1.5 block text-sm font-semibold">输入模态</span>
+                                    <Select
+                                        value={modality}
+                                        onChange={(value) => setModality(value as "text" | "reference")}
+                                        options={[
+                                            { value: "text", label: "文生图" },
+                                            { value: "reference", label: "参考生成" },
+                                        ]}
+                                        className="w-full"
+                                    />
+                                </label>
+
+                                {modality === "reference" ? <div className="min-w-0">
                                     <div className="mb-2 flex items-center justify-between gap-3">
                                         <span className="text-sm font-semibold">参考图</span>
                                         <div className="flex gap-2">
@@ -417,12 +458,27 @@ export default function ImagePage() {
                                                 </button>
                                             </div>
                                         ))}
-                                        {!references.length ? <div className="flex min-w-full items-center justify-center text-xs text-stone-500">暂无参考图，可将图片拖到这里</div> : null}
+                                        {!references.length ? <div className="flex min-w-full items-center justify-center text-xs text-stone-500">暂无参考图，可将图片拖到这里，也可在提示词框 Ctrl+V 粘贴</div> : null}
                                     </div>
+                                </div> : null}
+
+                                <div>
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <span className="text-sm font-semibold">提示词</span>
+                                        <div className="flex gap-2">
+                                            <Button size="small" icon={<BookOpen className="size-3.5" />} onClick={() => setPromptDialogOpen(true)}>
+                                                提示词库
+                                            </Button>
+                                            <Button size="small" icon={<FolderPlus className="size-3.5" />} onClick={() => setAssetPickerOpen(true)}>
+                                                我的资产
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <Input.TextArea value={prompt} onChange={(event) => setPrompt(event.target.value)} onPaste={handlePromptPaste} rows={5} maxLength={20000} showCount placeholder="描述画面主体、风格、构图、光线和用途。参考生成模式下可直接 Ctrl+V 粘贴图片" />
                                 </div>
 
                                 <div className="hidden sm:block">
-                                    <GenerationSettings config={effectiveConfig} model={model} updateConfig={updateConfig} openConfigDialog={openConfigDialog} />
+                                    <ImageSettingsPanel config={effectiveConfig} model={model} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
                                 </div>
                             </div>
 
@@ -478,7 +534,7 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
                 <ModelPicker config={config} value={model} onChange={(value) => updateConfig("imageModel", value)} capability="image" fullWidth onMissingConfig={() => openConfigDialog(false)} />
             </label>
             <div className="col-span-2">
-                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
+                <ImageSettingsPanel config={config} model={model} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-4" maxCount={10} />
             </div>
         </>
     );

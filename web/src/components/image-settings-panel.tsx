@@ -1,8 +1,9 @@
 import { type ReactNode, useState } from "react";
-import { ConfigProvider, Switch } from "antd";
+import { ConfigProvider, Select, Switch } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
-import type { AiConfig } from "@/stores/use-config-store";
+import { calcImageSize, imageCapabilitiesFor } from "@/lib/image-model-capabilities";
+import { modelOptionName, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 
 const qualityOptions = [
     { value: "auto", label: "自动" },
@@ -36,6 +37,8 @@ export const imageAspectOptions = aspectOptions.map((item) => ({ value: item.val
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
+    /** 当前图像模型（可选；未传时回退 config.imageModel || config.model） */
+    model?: string;
     onConfigChange: (key: "quality" | "size" | "count" | "background" | "resolution", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
@@ -44,25 +47,15 @@ type ImageSettingsPanelProps = {
     quickCount?: number;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, model: imageModelProp, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10 }: ImageSettingsPanelProps) {
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
+    const imageModel = imageModelProp || config.imageModel || config.model;
+    const capabilities = imageCapabilitiesFor(config, imageModel);
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const activeSize = config.size || "auto";
     const activeResolution = config.resolution || "1K";
     const transparentBackground = config.background === "transparent";
-    const selectedAspect = aspectOptions.find((item) => item.value === activeSize);
-    const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
-    const selectAspect = (value: string) => {
-        const option = aspectOptions.find((item) => item.value === value);
-        onConfigChange("size", option?.value || "auto");
-    };
-    const updateDimension = (key: "width" | "height", value: number | null) => {
-        const next = Math.max(1, Math.floor(value || dimensions[key] || 1024));
-        const width = key === "width" ? next : dimensions.width;
-        const height = key === "height" ? next : dimensions.height;
-        onConfigChange("size", `${alignDimension(width, snapDimensionToStep)}x${alignDimension(height, snapDimensionToStep)}`);
-    };
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -86,52 +79,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </div>
-                <div className="space-y-2.5">
-                    <div className="flex items-center justify-between gap-3">
-                        <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
-                        <div className="flex items-center gap-2">
-                            <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
-                                16倍数对齐
-                            </span>
-                            <span title="输入完成后自动向上补成 16 的倍数" onMouseDown={(event) => event.stopPropagation()}>
-                                <Switch size="small" checked={snapDimensionToStep} onChange={setSnapDimensionToStep} />
-                            </span>
-                        </div>
-                    </div>
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("width", value)} />
-                        <span className="text-lg opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} alignToStep={snapDimensionToStep} onChange={(value) => updateDimension("height", value)} />
-                    </div>
-                </div>
-                <div className="space-y-2.5">
-                    <SettingTitle color={theme.node.muted}>宽高比</SettingTitle>
-                    <div className="grid grid-cols-4 gap-2.5">
-                        {aspectOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[72px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
-                                style={{ borderColor: selectedAspect?.value === item.value ? theme.node.text : theme.node.stroke, background: "transparent", color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => selectAspect(item.value)}
-                            >
-                                <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                            </button>
-                        ))}
-                    </div>
-                </div>
-                <div className="space-y-2.5">
-                    <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
-                    <div className="grid grid-cols-4 gap-2.5">
-                        {resolutionOptions.map((item) => (
-                            <OptionPill key={item.value} selected={activeResolution === item.value} theme={theme} onClick={() => onConfigChange("resolution", item.value)}>
-                                {item.label}
-                            </OptionPill>
-                        ))}
-                    </div>
-                </div>
+                <ImageFormatPicker config={config} model={imageModel} activeResolution={activeResolution} capabilities={capabilities} onConfigChange={onConfigChange} theme={theme} snapDimensionToStep={snapDimensionToStep} onSnapChange={setSnapDimensionToStep} />
                 <div className="flex items-center justify-between gap-3">
                     <div className="space-y-0.5">
                         <SettingTitle color={theme.node.muted}>透明背景</SettingTitle>
@@ -270,4 +218,111 @@ function readSizeDimensions(size: string, fallback: { width: number; height: num
 
 function alignDimension(value: number, enabled: boolean) {
     return enabled ? Math.ceil(value / DIMENSION_STEP) * DIMENSION_STEP : value;
+}
+
+/**
+ * 「清晰度 / 宽高比 / 尺寸」三级联动选择器（图像版）——
+ * 可选值来自 image-model-capabilities.ts（按模型官方文档固化）。
+ * 尺寸由「档位 × 比例」自动计算并 16 倍数对齐；通用兼容通道可开启自定义 W×H。
+ */
+function ImageFormatPicker({ config, model, activeResolution, capabilities, onConfigChange, theme, snapDimensionToStep, onSnapChange }: { config: AiConfig; model: string; activeResolution: string; capabilities: ReturnType<typeof imageCapabilitiesFor>; onConfigChange: ImageSettingsPanelProps["onConfigChange"]; theme: CanvasTheme; snapDimensionToStep: boolean; onSnapChange: (value: boolean) => void }) {
+    const [customSize, setCustomSize] = useState(false);
+    const requestConfig = resolveModelRequestConfig(config, model || config.imageModel || config.model);
+    void requestConfig;
+    const optionModel = modelOptionName(model || config.imageModel || config.model);
+
+    // 比例显示值：从 config.size 反推（ratio 值直接匹配；W×H 就近匹配；否则首项）
+    let ratioValue = config.size || capabilities.ratios[0].value;
+    const isRatioValue = capabilities.ratios.some((item) => item.value === ratioValue);
+    const sizeIsPixels = /^\d+x\d+$/.test(ratioValue);
+    if (!isRatioValue) {
+        if (sizeIsPixels) {
+            const [w, h] = ratioValue.split("x").map(Number);
+            const near = capabilities.ratios
+                .map((item) => ({ item, diff: Math.abs(w / h - item.w / item.h) }))
+                .sort((a, b) => a.diff - b.diff)[0];
+            ratioValue = near && near.diff <= 0.08 ? near.item.value : capabilities.ratios[0].value;
+        } else {
+            ratioValue = capabilities.ratios[0].value;
+        }
+    }
+
+    const autoSize = calcImageSize(activeResolution, ratioValue, capabilities.ratios);
+    const showCustom = customSize || (sizeIsPixels && !isRatioValue);
+
+    return (
+        <>
+            <div className="space-y-2.5">
+                <SettingTitle color={theme.node.muted}>清晰度</SettingTitle>
+                <Select
+                    size="small"
+                    className="w-full"
+                    value={activeResolution}
+                    onChange={(value) => onConfigChange("resolution", String(value))}
+                    options={capabilities.resolutions.map((item) => ({ value: item.value, label: item.label }))}
+                />
+            </div>
+            <div className="space-y-2.5">
+                <SettingTitle color={theme.node.muted}>宽高比</SettingTitle>
+                <Select
+                    size="small"
+                    className="w-full"
+                    value={ratioValue}
+                    onChange={(value) => onConfigChange("size", String(value))}
+                    options={capabilities.ratios.map((item) => ({ value: item.value, label: `${item.label}` }))}
+                />
+            </div>
+            <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-3">
+                    <SettingTitle color={theme.node.muted}>尺寸</SettingTitle>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
+                            自定义 W×H
+                        </span>
+                        <span title="开启后可手动输入宽高（自动 16 倍数对齐）" onMouseDown={(event) => event.stopPropagation()}>
+                            <Switch size="small" checked={showCustom} onChange={(checked) => { setCustomSize(checked); if (!checked) onConfigChange("size", ratioValue); }} />
+                        </span>
+                    </div>
+                </div>
+                {showCustom ? (
+                    <CustomSizeInputs size={sizeIsPixels ? config.size : autoSize} theme={theme} alignToStep={snapDimensionToStep} onSnapChange={onSnapChange} onChange={(value) => onConfigChange("size", value)} />
+                ) : (
+                    <input
+                        readOnly
+                        className="h-9 w-full rounded-xl border bg-stone-50 px-2 text-sm dark:bg-stone-900"
+                        style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                        value={autoSize.replace("x", " × ") + "（按档位与比例自动对齐）"}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    />
+                )}
+            </div>
+        </>
+    );
+}
+
+function CustomSizeInputs({ size, theme, alignToStep, onSnapChange, onChange }: { size: string; theme: CanvasTheme; alignToStep: boolean; onSnapChange: (value: boolean) => void; onChange: (value: string) => void }) {
+    const match = size.match(/^(\d+)x(\d+)$/);
+    const width = match ? Number(match[1]) : 1024;
+    const height = match ? Number(match[2]) : 1024;
+    const commit = (key: "w" | "h", raw: number) => {
+        const next = Math.max(64, alignDimension(Math.floor(raw || 1024), alignToStep));
+        onChange(key === "w" ? `${next}x${height}` : `${width}x${next}`);
+    };
+    return (
+        <>
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
+                <DimensionInput prefix="W" value={width} disabled={false} theme={theme} alignToStep={alignToStep} onChange={(value) => commit("w", value || 1024)} />
+                <span className="text-lg opacity-45">↔</span>
+                <DimensionInput prefix="H" value={height} disabled={false} theme={theme} alignToStep={alignToStep} onChange={(value) => commit("h", value || 1024)} />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+                <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
+                    16倍数对齐
+                </span>
+                <span onMouseDown={(event) => event.stopPropagation()}>
+                    <Switch size="small" checked={alignToStep} onChange={onSnapChange} />
+                </span>
+            </div>
+        </>
+    );
 }

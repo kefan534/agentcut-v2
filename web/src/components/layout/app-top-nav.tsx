@@ -101,6 +101,7 @@ export function AppTopNav() {
                                             { key: "profile", label: `${currentUser.displayName}（${currentUser.credits} 积分）`, disabled: true },
                                             { key: "assets", label: "我的资产" },
                                             { key: "my-revenue", label: "我的收入" },
+                                            { key: "cost-center", label: "成本中心" },
                                             { key: "change-password", label: "修改密码" },
                                             ...(currentUser.role === "admin" ? [{ key: "admin", label: "管理后台" }] : []),
                                             { type: "divider" },
@@ -109,6 +110,7 @@ export function AppTopNav() {
                                         onClick: async ({ key }) => {
                                             if (key === "assets") navigate("/assets");
                                             if (key === "my-revenue") navigate("/my-revenue");
+                                            if (key === "cost-center") navigate("/cost-center");
                                             if (key === "change-password") setChangePwOpen(true);
                                             if (key === "admin") navigate("/admin");
                                             if (key === "logout") {

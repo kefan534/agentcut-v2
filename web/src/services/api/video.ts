@@ -16,6 +16,12 @@ import {
     normalizeMetasoRatio,
     normalizeMetasoResolution,
 } from "@/lib/metaso-video";
+import {
+    isAgnesVideoConfig,
+    isAgnesVideoModel,
+    agnesAudioReferenceError,
+    agnesVideoReferenceError,
+} from "@/lib/agnes-video";
 import { buildApiUrl, modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
 import { runModelPlugin } from "./model-plugin";
 import { isRemoteModel, remoteVideoGeneration, remoteVideoTaskStatus, remoteVideoTaskContent } from "./remote-gateway";
@@ -68,15 +74,19 @@ export async function requestVideoGeneration(config: AiConfig, prompt: string, r
     throw new Error("视频生成超时，请稍后重试");
 }
 
-export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions): Promise<VideoGenerationTask> {
+export type VideoKeyframeInput = { modality?: "text" | "keyframe" | "reference"; first?: ReferenceImage | null; last?: ReferenceImage | null };
+
+export async function createVideoGenerationTask(config: AiConfig, prompt: string, references: ReferenceImage[] = [], videoReferences: ReferenceVideo[] = [], audioReferences: ReferenceAudio[] = [], options?: RequestOptions, keyframe?: VideoKeyframeInput): Promise<VideoGenerationTask> {
     const selectedModel = (config.model || config.videoModel).trim();
     if (isRemoteModel(config, selectedModel)) {
-        const isMetaso = isMetasoVideoModel(modelOptionName(selectedModel));
-        if ((videoReferences.length || audioReferences.length) && !isMetaso) {
-            throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）模型，或移除参考资产");
+        const optionModel = modelOptionName(selectedModel);
+        const isMetaso = isMetasoVideoModel(optionModel);
+        const isAgnes = isAgnesVideoModel(optionModel);
+        if ((videoReferences.length || audioReferences.length) && !isMetaso && !isAgnes) {
+            throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）/ Agnes 模型，或移除参考资产");
         }
         try {
-            const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, videoReferences, audioReferences, options));
+            const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, videoReferences, audioReferences, options, keyframe));
             if (!created.id) throw new Error("视频接口没有返回任务 ID");
             return { id: created.id, provider: "openai", model: selectedModel };
         } catch (error) {
@@ -87,6 +97,10 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
     const script = resolveModelScript(config, selectedModel);
     if (script) return createPluginVideoTask(requestConfig, selectedModel, script, prompt, references, options);
     assertVideoConfig(requestConfig, requestConfig.model);
+    if (isAgnesVideoConfig(requestConfig)) {
+        // Agnes 模型的 Key 只存服务端，统一经后端网关代理调用
+        return createAgnesTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options, keyframe);
+    }
     if (isSeedanceVideoConfig(requestConfig)) {
         return createSeedanceTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
@@ -94,9 +108,24 @@ export async function createVideoGenerationTask(config: AiConfig, prompt: string
         return createMetasoTask(requestConfig, selectedModel, prompt, references, videoReferences, audioReferences, options);
     }
     if (videoReferences.length || audioReferences.length) {
-        throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）模型，或移除参考资产");
+        throw new Error("当前视频接口不支持参考视频或参考音频，请切换到 Seedance 2.0 / MiniMax H3（秘塔）/ Agnes 模型，或移除参考资产");
     }
     return createOpenAIVideoTask(requestConfig, selectedModel, prompt, references, options);
+}
+
+async function createAgnesTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], options?: RequestOptions, keyframe?: VideoKeyframeInput): Promise<VideoGenerationTask> {
+    const optionModel = modelOptionName(model);
+    const referenceError = agnesVideoReferenceError(videoReferences, optionModel);
+    if (referenceError) throw new Error(referenceError);
+    const audioError = agnesAudioReferenceError(audioReferences);
+    if (audioError) throw new Error(audioError);
+    try {
+        const created = unwrapVideoResponse(await remoteVideoGeneration(config, prompt, references, videoReferences, audioReferences, options, keyframe));
+        if (!created.id) throw new Error("Agnes 接口没有返回任务 ID");
+        return { id: created.id, provider: "openai", model };
+    } catch (error) {
+        throw new Error(readAxiosError(error, "Agnes 视频任务创建失败"));
+    }
 }
 
 export async function pollVideoGenerationTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {

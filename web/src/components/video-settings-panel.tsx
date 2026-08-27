@@ -12,6 +12,15 @@ import {
   normalizeMetasoRatio,
   normalizeMetasoResolution,
 } from "@/lib/metaso-video";
+import {
+  agnesRatioOptions,
+  agnesResolutionOptions,
+  isAgnesFlashModel,
+  isAgnesVideoConfig,
+  normalizeAgnesRatio,
+  normalizeAgnesSeconds,
+  normalizeAgnesSize,
+} from "@/lib/agnes-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { type AiConfig } from "@/stores/use-config-store";
 
@@ -37,7 +46,7 @@ export const videoSecondOptions = secondOptions.map((value) => String(value));
 
 type VideoSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark", value: string) => void;
+    onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoSeed", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
@@ -50,6 +59,10 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
 
     if (isMetasoVideoConfig(config)) {
         return <MetasoVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    }
+
+    if (isAgnesVideoConfig(config)) {
+        return <AgnesVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
     const seconds = config.videoSeconds || "6";
@@ -104,6 +117,72 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </SettingGroup>
                 <SettingGroup title="秒数" color={theme.node.muted}>
                     <DurationSlider value={Number(seconds) || 6} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
+                </SettingGroup>
+            </div>
+        </ImageSettingsTheme>
+    );
+}
+
+function AgnesVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
+    const model = config.model || config.videoModel;
+    const flash = isAgnesFlashModel(model);
+    const size = normalizeAgnesSize(config.vquality, flash);
+    const ratio = normalizeAgnesRatio(config.size);
+    const seconds = normalizeAgnesSeconds(config.videoSeconds);
+    const seed = config.videoSeed?.trim() || "";
+
+    return (
+        <ImageSettingsTheme theme={theme}>
+            <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
+                {showTitle ? <div className="text-lg font-semibold">视频设置</div> : null}
+                <SettingGroup title="分辨率" color={theme.node.muted}>
+                    {flash ? (
+                        <div className="text-xs opacity-60">Flash 固定 720P，不可调整</div>
+                    ) : (
+                        <div className="grid grid-cols-3 gap-2.5">
+                            {agnesResolutionOptions.map((item) => (
+                                <OptionPill key={item.value} selected={size === item.value} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
+                                    {item.label}
+                                </OptionPill>
+                            ))}
+                        </div>
+                    )}
+                </SettingGroup>
+                <SettingGroup title="画幅" color={theme.node.muted}>
+                    <div className="grid grid-cols-3 gap-2.5">
+                        {agnesRatioOptions.map((item) => (
+                            <button
+                                key={item.value}
+                                type="button"
+                                className="flex h-[68px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border bg-transparent px-1 text-sm transition hover:opacity-80"
+                                style={{ borderColor: ratio === item.value ? theme.node.text : theme.node.stroke, color: theme.node.text }}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => onConfigChange("size", item.value)}
+                            >
+                                <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
+                                <span>{item.label}</span>
+                                <span className="text-[10px] leading-none opacity-55">{item.value}</span>
+                            </button>
+                        ))}
+                    </div>
+                </SettingGroup>
+                <SettingGroup title="时长" color={theme.node.muted}>
+                    <DurationSlider value={Number(seconds)} min={4} max={12} theme={theme} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
+                </SettingGroup>
+                <SettingGroup title="随机种子" color={theme.node.muted}>
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="number"
+                            min={0}
+                            placeholder="留空则随机"
+                            className="h-9 flex-1 rounded-full border bg-transparent px-3 text-center text-sm outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                            style={{ borderColor: theme.node.stroke, color: theme.node.text }}
+                            value={seed}
+                            onChange={(event) => onConfigChange("videoSeed", event.target.value)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        />
+                    </div>
+                    <div className="text-xs opacity-60">相同种子 + 相同参数可复现生成结果</div>
                 </SettingGroup>
             </div>
         </ImageSettingsTheme>

@@ -505,25 +505,30 @@ async def _run_gateway(
 
     modal_category = source.modal_category
     # R2-#1: 统一计费口径 —— 与异步任务/报价共用 compute_cost（定价规则优先，COST_MAP 兜底）
-    from app.services.gateway_service import compute_cost
-    cost = compute_cost(db, variable_name, body, modal_category)
+    # 视频任务状态查询（POST /videos/{id} 轮询）不计费、不登记任务：它不是生成行为，
+    # 否则每次轮询都会按兜底价重复扣积分。
+    from app.services.gateway_service import compute_cost, _VIDEO_TASK_QUERY_RE
+    is_task_query = bool(endpoint_override and _VIDEO_TASK_QUERY_RE.match(endpoint_override))
+    cost = 0 if is_task_query else compute_cost(db, variable_name, body, modal_category)
 
-    try:
-        deduct_credits(
-            db=db,
-            user_id=current_user.id,
-            amount=cost,
-            reason="generation",
-            reference_id=str(uuid.uuid4()),
-        )
-    except ValueError:
-        raise HTTPException(status_code=402, detail="Insufficient credits")
+    gen_job = None
+    if not is_task_query:
+        try:
+            deduct_credits(
+                db=db,
+                user_id=current_user.id,
+                amount=cost,
+                reason="generation",
+                reference_id=str(uuid.uuid4()),
+            )
+        except ValueError:
+            raise HTTPException(status_code=402, detail="Insufficient credits")
 
-    # P0-2: 扣费成功后登记任务，供统一任务中心聚合
-    gen_job_id = create_job(variable_name, dict(body), str(current_user.id))
-    gen_job = get_job(gen_job_id)
-    if gen_job:
-        gen_job["cost_credits"] = cost
+        # P0-2: 扣费成功后登记任务，供统一任务中心聚合
+        gen_job_id = create_job(variable_name, dict(body), str(current_user.id))
+        gen_job = get_job(gen_job_id)
+        if gen_job:
+            gen_job["cost_credits"] = cost
 
     request_id = str(uuid.uuid4())
     start = time.time()

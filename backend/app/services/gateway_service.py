@@ -493,7 +493,8 @@ async def _normalize_reference_urls(body: Dict[str, Any], user_id: str = "system
                     "reference_images", "input_image", "input_images",
                     "input_reference", "input_references",
                     "video", "videos", "video_urls", "reference_videos",
-                    "audio", "audios", "audio_urls", "reference_audios")
+                    "audio", "audios", "audio_urls", "reference_audios",
+                    "first_frame", "last_frame")
     for field in media_fields:
         if field not in out:
             continue
@@ -535,6 +536,10 @@ async def call_upstream(
     # before the generic "minimax" Gradio matcher below).
     if _is_metaso_source(source):
         return await _call_metaso_minimax_h3(source, headers, body, endpoint_override or source.endpoint_path or "")
+
+    # Agnes Video 2.5 / 2.5 Flash: OpenAI-Videos-compatible adapter.
+    if _is_agnes_source(source):
+        return await _call_agnes_video(source, headers, body, endpoint_override or source.endpoint_path or "")
 
     # MiniMax H3 Compshare: route through the Gradio adapter
     if _is_h3_source(source):
@@ -1115,3 +1120,249 @@ async def _call_metaso_minimax_h3(
     url = _build_upstream_url(source, endpoint)
     return await _metaso_post_task(source, url, headers, body)
 
+
+
+# ---------------------------------------------------------------------------
+# Agnes Video 2.5 / 2.5 Flash adapter
+#
+# OpenAI-Videos 兼容协议：
+#   创建任务: POST {base_url}/videos            body 含 mode/prompt/seconds/size/aspect_ratio
+#   轮询任务: GET  {origin}/agnesapi?video_id=<ID>&model_name=<model>
+#
+# 前端统一经 /gateway/{variable}/proxy 调用：
+#   endpoint "/videos" 或 "videos/generations" -> 创建（body 由前端按 mode 组装，此处归一化）
+#   endpoint "/videos/{id}"                    -> 服务端轮询至终态（与 metaso H3 适配器同模式）
+#
+# Flash 收窄: size 固定 "720P"、参考图 ≤5、不支持参考视频。
+# ---------------------------------------------------------------------------
+
+_AGNES_HOST_MARKERS = ("agnes-ai.cn",)
+
+
+def _is_agnes_source(source: ApiSource) -> bool:
+    """True if this source points at the Agnes Video API."""
+    base = (source.base_url or "").lower()
+    name = (source.source_name or "").lower()
+    vendor = (source.vendor or "").lower()
+    model = (source.model_version or "").lower()
+    return any(marker in blob for blob in (base, name, vendor, model) for marker in _AGNES_HOST_MARKERS)
+
+
+def _is_agnes_flash(source: ApiSource) -> bool:
+    return "flash" in (source.model_version or "").lower()
+
+
+_AGNES_RATIO_WHITELIST = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
+
+
+def _map_agnes_size(value: Any, flash: bool) -> str:
+    """Map frontend resolution values (720p / 960P / 2K ...) to Agnes size enum."""
+    if flash:
+        return "720P"
+    s = str(value or "").strip().upper().replace(" ", "")
+    if s in ("720P", "960P", "2K"):
+        return s
+    if s.startswith("960"):
+        return "960P"
+    if "2K" in s:
+        return "2K"
+    return "720P"
+
+
+def _map_agnes_ratio(value: Any) -> str:
+    """Map frontend ratio/size values to the Agnes aspect_ratio whitelist."""
+    s = str(value or "").strip().lower()
+    if s in _AGNES_RATIO_WHITELIST:
+        return s
+    m = re.match(r"^(\d+)[x×:](\d+)$", s)
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        if w > 0 and h > 0:
+            g = _gcd(w, h)
+            ratio = f"{w // g}:{h // g}"
+            if ratio in _AGNES_RATIO_WHITELIST:
+                return ratio
+    return "16:9"
+
+
+def _convert_agnes_request(source: ApiSource, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize an AgentCut video body into the Agnes /videos create format."""
+    prompt = str(body.get("prompt", "")).strip()
+    if not prompt:
+        raise RuntimeError("Agnes 视频需要非空的提示词")
+
+    flash = _is_agnes_flash(source)
+
+    # mode: 前端显式传 mode(text/keyframe/reference)，兼容用 video_mode 推断
+    mode = str(body.get("mode", "")).lower()
+    if mode not in ("text", "keyframe", "reference"):
+        video_mode = str(body.get("video_mode", "text_to_video")).lower()
+        if video_mode in ("image_to_video", "keyframe"):
+            mode = "keyframe"
+        elif video_mode == "reference_to_video":
+            mode = "reference"
+        else:
+            mode = "text"
+
+    seconds = int(body.get("seconds") or body.get("duration") or 5)
+    seconds = max(4, min(12, seconds))
+
+    converted: Dict[str, Any] = {
+        "model": source.model_version or ("agnes-video-2.5-flash" if flash else "agnes-video-2.5"),
+        "prompt": prompt,
+        "mode": mode,
+        "seconds": str(seconds),
+        "size": _map_agnes_size(body.get("size") or body.get("resolution"), flash),
+        "aspect_ratio": _map_agnes_ratio(body.get("aspect_ratio") or body.get("ratio")),
+    }
+
+    seed = body.get("seed")
+    if seed not in (None, ""):
+        try:
+            converted["seed"] = int(seed)
+        except (TypeError, ValueError):
+            pass
+
+    def _as_url_list(raw: Any) -> List[str]:
+        if isinstance(raw, str):
+            return [raw] if raw else []
+        if isinstance(raw, list):
+            return [str(u) for u in raw if isinstance(u, str) and u]
+        return []
+
+    if mode == "keyframe":
+        first = body.get("first_frame") or body.get("image")
+        last = body.get("last_frame")
+        if isinstance(first, str) and first:
+            converted["first_frame"] = first
+        if isinstance(last, str) and last:
+            converted["last_frame"] = last
+        if not converted.get("first_frame") and not converted.get("last_frame"):
+            raise RuntimeError("Agnes 首尾帧模式至少需要一张首帧或尾帧图片")
+    elif mode == "reference":
+        images = _as_url_list(body.get("images") or body.get("image_urls") or body.get("image"))
+        audios = _as_url_list(body.get("audios") or body.get("audio"))
+        videos = body.get("videos")
+        video_entries: List[Dict[str, Any]] = []
+        if isinstance(videos, list):
+            for item in videos:
+                if isinstance(item, dict) and item.get("url"):
+                    entry: Dict[str, Any] = {"url": str(item["url"])}
+                    if item.get("start_seconds") is not None:
+                        try:
+                            entry["start_seconds"] = float(item["start_seconds"])
+                        except (TypeError, ValueError):
+                            pass
+                    if item.get("require_audio") is not None:
+                        entry["require_audio"] = bool(item["require_audio"])
+                    video_entries.append(entry)
+                elif isinstance(item, str) and item:
+                    video_entries.append({"url": item})
+        if flash:
+            converted["images"] = images[:5]
+            converted.pop("videos", None)  # Flash 不支持参考视频
+        else:
+            if images:
+                converted["images"] = images
+            if video_entries:
+                converted["videos"] = video_entries
+        if audios:
+            converted["audios"] = audios
+        if not converted.get("images") and not converted.get("audios") and not converted.get("videos"):
+            raise RuntimeError("Agnes 参考生成模式至少需要一类参考素材（图片/音频/视频）")
+
+    return converted
+
+
+async def _create_agnes_task(
+    source: ApiSource,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+    endpoint: str,
+) -> Dict[str, Any]:
+    """Submit an Agnes video task; returns {"id": <video_id>, "status": "queued"}."""
+    converted = await _convert_agnes_request(source, body)
+    url = _build_upstream_url(source, endpoint or source.endpoint_path or "/videos")
+    timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        response = await client.post(url, headers=headers, json=converted)
+        if response.status_code >= 400:
+            err_text = response.text[:1000]
+            print(f"[agnes] POST {url} -> {response.status_code}\n  request_body={json.dumps(converted, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+            raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
+        payload = response.json()
+    print(f"[agnes] POST {url} -> {response.status_code} model={converted.get('model')} mode={converted.get('mode')}", flush=True)
+
+    video_id = payload.get("video_id") or payload.get("id") or payload.get("task_id")
+    if not video_id:
+        raise RuntimeError(f"Agnes 未返回任务 ID：{json.dumps(payload)[:300]}")
+    return {"id": str(video_id), "status": "queued", "video_id": str(video_id)}
+
+
+async def _poll_agnes_task(
+    source: ApiSource,
+    headers: Dict[str, str],
+    video_id: str,
+    timeout_seconds: float = 600.0,
+) -> Dict[str, Any]:
+    """Poll GET {origin}/agnesapi?video_id=..&model_name=.. until terminal state."""
+    base_url = (source.base_url or "").rstrip("/")
+    origin = base_url.split("/v1")[0] if "/v1" in base_url else base_url
+    model_name = source.model_version or "agnes-video-2.5"
+    query_url = f"{origin}/agnesapi?video_id={video_id}&model_name={model_name}"
+    deadline = time.time() + timeout_seconds
+    poll_timeout = httpx.Timeout(30.0, connect=10.0)
+    last_error = "任务处理超时"
+
+    while time.time() < deadline:
+        async with httpx.AsyncClient(timeout=poll_timeout, follow_redirects=False) as client:
+            response = await client.get(query_url, headers=headers)
+            if response.status_code == 404:
+                # 任务尚未入库（刚创建），视为进行中
+                last_error = "任务排队中"
+            elif response.status_code >= 400:
+                last_error = f"{response.status_code} {response.reason_phrase} | body={response.text[:300]}"
+            else:
+                payload = response.json()
+                status = str(payload.get("status", "")).lower()
+                if status == "completed":
+                    metadata = payload.get("metadata") or {}
+                    url = metadata.get("url") if isinstance(metadata, dict) else None
+                    if url:
+                        return {"id": video_id, "status": "succeeded", "video_url": url, "result_url": url, "url": url}
+                    return {"id": video_id, "status": "failed", "error": {"message": "任务成功但没有返回视频地址"}}
+                if status == "failed":
+                    err = payload.get("error") or "视频生成失败"
+                    if isinstance(err, dict):
+                        err = err.get("message") or err
+                    return {"id": video_id, "status": "failed", "error": {"message": str(err)}}
+                if status in ("queued", "in_progress", "pending", "running", ""):
+                    last_error = "任务处理中"
+        await asyncio.sleep(3)
+
+    raise RuntimeError(f"Agnes 任务超时（video_id={video_id}）: {last_error}")
+
+
+async def _call_agnes_video(
+    source: ApiSource,
+    headers: Dict[str, str],
+    body: Dict[str, Any],
+    endpoint: str,
+) -> Any:
+    """Route a gateway request to the Agnes Video API."""
+    # Task status query: frontend polls POST /videos/{videoId} -> Agnes GET /agnesapi
+    m = _VIDEO_TASK_QUERY_RE.match(endpoint)
+    if m:
+        return await _poll_agnes_task(source, headers, m.group(1), timeout_seconds=600.0)
+
+    # Video generation: POST /videos or /videos/generations
+    if _VIDEO_ENDPOINT_RE.search(endpoint) or endpoint.rstrip("/").endswith("/videos"):
+        return await _create_agnes_task(source, headers, body, endpoint)
+
+    # Fallback: forward as-is to the configured endpoint
+    url = _build_upstream_url(source, endpoint)
+    timeout = httpx.Timeout(source.timeout_ms / 1000.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+        response = await client.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        return response.json()

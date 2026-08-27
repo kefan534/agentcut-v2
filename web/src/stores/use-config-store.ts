@@ -44,6 +44,7 @@ export type AiConfig = {
     vquality: string;
     videoGenerateAudio: string;
     videoWatermark: string;
+    videoSeed: string;
     systemPrompt: string;
     reasoningEffort: ReasoningEffort;
     models: string[];
@@ -89,6 +90,7 @@ export const defaultConfig: AiConfig = {
     vquality: "720",
     videoGenerateAudio: "true",
     videoWatermark: "false",
+    videoSeed: "",
     systemPrompt: "",
     reasoningEffort: "auto",
     models: [],
@@ -297,6 +299,7 @@ export const useConfigStore = create<ConfigStore>()(
                         vquality: config.vquality || "720",
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
+                        videoSeed: config.videoSeed || "",
                         canvasImageCount: config.canvasImageCount || "3",
                         resolution: config.resolution || "1K",
                     },

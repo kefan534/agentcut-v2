@@ -14,6 +14,15 @@ import {
   normalizeMetasoRatio,
   normalizeMetasoResolution,
 } from "@/lib/metaso-video";
+import {
+  buildAgnesPromptText,
+  isAgnesFlashModel,
+  isAgnesVideoModel,
+  normalizeAgnesRatio,
+  normalizeAgnesSeconds,
+  normalizeAgnesSize,
+} from "@/lib/agnes-video";
+import type { VideoModality } from "@/lib/video-capabilities";
 
 export type RequestOptions = { signal?: AbortSignal };
 
@@ -348,12 +357,16 @@ export async function remoteVideoGeneration(
     videoReferences: ReferenceVideo[] = [],
     audioReferences: ReferenceAudio[] = [],
     options?: RequestOptions,
+    keyframe?: { modality?: VideoModality; first?: ReferenceImage | null; last?: ReferenceImage | null },
 ): Promise<Record<string, unknown>> {
     const selectedModel = config.model || config.videoModel;
     const model = modelOptionName(selectedModel);
 
     if (isMetasoVideoModel(model)) {
         return remoteMetasoVideoGeneration(config, model, prompt, references, videoReferences, audioReferences, options);
+    }
+    if (isAgnesVideoModel(model)) {
+        return remoteAgnesVideoGeneration(config, model, prompt, references, videoReferences, audioReferences, options, keyframe);
     }
 
     // Prefer public http(s) URLs when every reference has one (flux-art requires public URLs).
@@ -416,6 +429,65 @@ async function remoteMetasoVideoGeneration(
 
     const response = await backendApi.proxyGateway(model, "/videos/generations", body);
     return response as Record<string, unknown>;
+}
+
+async function remoteAgnesVideoGeneration(
+    config: AiConfig,
+    model: string,
+    prompt: string,
+    references: ReferenceImage[],
+    videoReferences: ReferenceVideo[],
+    audioReferences: ReferenceAudio[],
+    options?: RequestOptions,
+    keyframe?: { modality?: VideoModality; first?: ReferenceImage | null; last?: ReferenceImage | null },
+): Promise<Record<string, unknown>> {
+    const flash = isAgnesFlashModel(model);
+    const mode: VideoModality = keyframe?.modality === "keyframe" ? "keyframe" : keyframe?.modality === "reference" ? "reference" : "text";
+
+    const body: Record<string, unknown> = {
+        model,
+        prompt: mode === "reference" ? buildAgnesPromptText(prompt, references, videoReferences, audioReferences) : prompt.trim(),
+        mode,
+        seconds: normalizeAgnesSeconds(config.videoSeconds),
+        size: normalizeAgnesSize(config.vquality, flash),
+        aspect_ratio: normalizeAgnesRatio(config.size),
+    };
+    const seed = Number(config.videoSeed);
+    if (config.videoSeed?.trim() && Number.isFinite(seed) && seed >= 0) body.seed = Math.floor(seed);
+
+    if (mode === "keyframe") {
+        if (keyframe?.first) body.first_frame = await resolveAgnesImageUrl(keyframe.first);
+        if (keyframe?.last) body.last_frame = await resolveAgnesImageUrl(keyframe.last);
+        if (!body.first_frame && !body.last_frame) throw new Error("首尾帧模式至少需要一张首帧或尾帧图片");
+    } else if (mode === "reference") {
+        if (!references.length && !videoReferences.length && !audioReferences.length) {
+            throw new Error("参考生成模式至少需要一张参考图、一个参考视频或一段参考音频");
+        }
+        if (references.length) {
+            const imageUrls = await Promise.all(references.map((image) => resolveAgnesImageUrl(image)));
+            body.images = flash ? imageUrls.slice(0, 5) : imageUrls;
+        }
+        if (audioReferences.length) body.audios = audioReferences.map((audio) => audio.url);
+        if (videoReferences.length) {
+            if (flash) throw new Error("Agnes 2.5 Flash 不支持参考视频");
+            // Agnes 参考视频是对象数组 {url}；素材已经过 COS 上传拿到公网 URL
+            body.videos = videoReferences.map((video) => ({ url: video.url }));
+        }
+    }
+
+    const response = (await backendApi.proxyGateway(model, "/videos", body)) as Record<string, unknown>;
+    // Agnes 创建响应的 video_id 才是轮询用的 ID（id/task_id 是任务 ID，两者可能不同）
+    const videoId = typeof response.video_id === "string" && response.video_id ? response.video_id : response.id;
+    if (!videoId) throw new Error("Agnes 接口没有返回任务 ID");
+    return { ...response, id: videoId };
+}
+
+async function resolveAgnesImageUrl(image: ReferenceImage) {
+    const directUrl = image.url || image.dataUrl;
+    if (isPublicMediaUrl(directUrl)) return directUrl;
+    const dataUrl = await imageToDataUrl(image);
+    if (!dataUrl) throw new Error("参考图读取失败，请换一张图片或重新上传");
+    return dataUrl;
 }
 
 function isPublicMediaUrl(value: string) {

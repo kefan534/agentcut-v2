@@ -73,7 +73,7 @@ export function GenerationConfirmBubble({ open, onClose, onConfirm, kind, cost, 
                         </button>
                         <button
                             type="button"
-                            className="h-7 cursor-pointer rounded-lg border-none bg-stone-50 px-3.5 text-xs font-medium text-stone-950 transition hover:bg-white"
+                            className="h-7 cursor-pointer rounded-lg border border-amber-500/40 bg-amber-500/10 px-3.5 text-xs font-medium text-amber-400 transition hover:border-amber-400/60 hover:bg-amber-500/20"
                             onClick={() => {
                                 onClose();
                                 onConfirm();

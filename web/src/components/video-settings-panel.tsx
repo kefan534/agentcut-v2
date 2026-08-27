@@ -36,7 +36,7 @@ const FREE_SHORT_SIDE: Record<string, number> = { "480": 480, "720": 720, "1080"
  * - free:     第三级为 W×H（可编辑），随前两级自动计算；OpenAI 兼容通道独享
  */
 function VideoFormatPicker({ config, model, onConfigChange, theme }: { config: AiConfig; model: string; onConfigChange: VideoSettingsPanelProps["onConfigChange"]; theme: CanvasTheme }) {
-    const requestConfig = resolveModelRequestConfig(config, model);
+    const requestConfig = resolveModelRequestConfig(config, model || config.videoModel || config.model);
     const { resolutions, ratios, sizeMode, sizeTable } = formatSelectState(requestConfig.model, requestConfig.apiFormat);
 
     // —— 第一级：清晰度（存量值不在该模型文档档位内时，按文档归一化显示）
@@ -219,23 +219,27 @@ export const videoSecondOptions = secondOptions.map((value) => String(value));
 
 type VideoSettingsPanelProps = {
     config: AiConfig;
+    /** 当前视频模型（可选；未传时回退 config.videoModel || config.model） */
     onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoSeed", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps) {
-    if (isSeedanceVideoConfig(config)) {
-        return <SeedanceVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+export function VideoSettingsPanel({ config, model: videoModelProp, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5" }: VideoSettingsPanelProps & { model?: string }) {
+    // 分支判定必须以「视频模型」为准，而不是 config.model（可能是文本/图片主模型）
+    const videoModel = videoModelProp || config.videoModel || config.model;
+    const videoConfig: AiConfig = { ...config, model: videoModel };
+    if (isSeedanceVideoConfig(videoConfig)) {
+        return <SeedanceVideoSettingsPanel config={videoConfig} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
-    if (isMetasoVideoConfig(config)) {
-        return <MetasoVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    if (isMetasoVideoConfig(videoConfig)) {
+        return <MetasoVideoSettingsPanel config={videoConfig} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
-    if (isAgnesVideoConfig(config)) {
-        return <AgnesVideoSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
+    if (isAgnesVideoConfig(videoConfig)) {
+        return <AgnesVideoSettingsPanel config={videoConfig} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
     }
 
     const seconds = config.videoSeconds || "6";
@@ -261,7 +265,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
 }
 
 function AgnesVideoSettingsPanel({ config, onConfigChange, theme, showTitle, className }: VideoSettingsPanelProps) {
-    const model = config.model || config.videoModel;
+    const model = config.videoModel || config.model;
     const flash = isAgnesFlashModel(model);
     const size = normalizeAgnesSize(config.vquality, flash);
     const ratio = normalizeAgnesRatio(config.size);

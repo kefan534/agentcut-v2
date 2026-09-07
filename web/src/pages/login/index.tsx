@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { App, Button, Card, Form, Input } from "antd";
 
+import { SiteFooter } from "@/components/layout/site-footer";
 import { useUserStore } from "@/stores/use-user-store";
 
 export default function LoginPage() {
@@ -28,8 +29,9 @@ export default function LoginPage() {
     };
 
     return (
-        <main className="flex h-full items-center justify-center bg-background p-6">
-            <Card title="登录" className="w-full max-w-md">
+        <div className="flex h-full flex-col bg-background">
+            <main className="flex flex-1 items-center justify-center p-6">
+                <Card title="登录" className="w-full max-w-md">
                 <Form layout="vertical" onFinish={handleSubmit}>
                     <Form.Item
                         name="email"
@@ -63,6 +65,8 @@ export default function LoginPage() {
                     还没有账号？ <Link to="/register" className="text-blue-600 hover:underline">立即注册</Link>
                 </div>
             </Card>
-        </main>
+            </main>
+            <SiteFooter />
+        </div>
     );
 }

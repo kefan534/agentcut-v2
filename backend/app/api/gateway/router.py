@@ -33,8 +33,13 @@ router.include_router(sessions_router.router)
 
 
 def _get_request_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    return forwarded.split(",")[0].strip() if forwarded else request.client.host if request.client else ""
+    # 仅当显式声明前置反代可信（TRUST_PROXY_HEADERS=1，生产 nginx 场景）时才采信
+    # X-Forwarded-For，否则客户端可伪造该头绕过限流/审计。
+    if settings.TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else ""
 
 
 # ---------------------------------------------------------------------------
@@ -513,6 +518,7 @@ async def _run_gateway(
     is_task_query = bool(endpoint_override and _VIDEO_TASK_QUERY_RE.match(endpoint_override))
     cost = 0 if is_task_query else compute_cost(db, variable_name, body, modal_category)
 
+    request_id = str(uuid.uuid4())
     gen_job = None
     if not is_task_query:
         # 0 积分模型（免费/限时免费）：跳过扣费（deduct_credits 不接受 0 金额），但正常登记任务
@@ -523,7 +529,8 @@ async def _run_gateway(
                     user_id=current_user.id,
                     amount=cost,
                     reason="generation",
-                    reference_id=str(uuid.uuid4()),
+                    # 幂等操作号：扣费与退款共用同一 reference，重试/异常路径不重复扣退
+                    reference_id=request_id,
                 )
             except ValueError:
                 raise HTTPException(status_code=402, detail="Insufficient credits")
@@ -534,7 +541,6 @@ async def _run_gateway(
         if gen_job:
             gen_job["cost_credits"] = cost
 
-    request_id = str(uuid.uuid4())
     start = time.time()
 
     try:
@@ -548,33 +554,34 @@ async def _run_gateway(
                     async for chunk in stream_upstream(source, body, endpoint_override=endpoint_override):
                         yield chunk
                 except Exception as e:
-                    # P1-2：流式生成中途失败，退回已扣积分
-                    from app.services.credit_service import add_credits
-                    try:
-                        add_credits(
-                            db=db,
-                            user_id=current_user.id,
-                            delta=cost,
-                            reason="refund",
-                            reference_id=request_id,
-                        )
-                        log_call(
-                            db=db,
-                            request_id=request_id,
-                            user=current_user,
-                            variable_name=variable_name,
-                            source=source,
-                            modal_category=modal_category,
-                            status="failed",
-                            status_code=None,
-                            latency_ms=0,
-                            error_message=str(e)[:500],
-                            cost_credits=0,
-                            request_body=body,
-                            response_summary={},
-                        )
-                    except Exception:
-                        pass
+                    # P1-2：流式生成中途失败，退回已扣积分（0 积分模型不退）
+                    if cost > 0:
+                        from app.services.credit_service import add_credits
+                        try:
+                            add_credits(
+                                db=db,
+                                user_id=current_user.id,
+                                delta=cost,
+                                reason="refund",
+                                reference_id=request_id,
+                            )
+                            log_call(
+                                db=db,
+                                request_id=request_id,
+                                user=current_user,
+                                variable_name=variable_name,
+                                source=source,
+                                modal_category=modal_category,
+                                status="failed",
+                                status_code=None,
+                                latency_ms=0,
+                                error_message=str(e)[:500],
+                                cost_credits=0,
+                                request_body=body,
+                                response_summary={},
+                            )
+                        except Exception:
+                            pass
                     yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
             log_call(
@@ -658,14 +665,15 @@ async def _run_gateway(
             gen_job["error_message"] = str(e)[:500]
             gen_job["completed_at"] = _now_ms()
         latency = (time.time() - start) * 1000
-        from app.services.credit_service import add_credits
-        add_credits(
-            db=db,
-            user_id=current_user.id,
-            delta=cost,
-            reason="refund",
-            reference_id=request_id,
-        )
+        if cost > 0:
+            from app.services.credit_service import add_credits
+            add_credits(
+                db=db,
+                user_id=current_user.id,
+                delta=cost,
+                reason="refund",
+                reference_id=request_id,
+            )
         log_call(
             db=db,
             request_id=request_id,

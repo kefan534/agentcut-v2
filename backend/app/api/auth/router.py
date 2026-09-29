@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.core.config import settings
-from app.core.security import get_password_hash, verify_password, create_token_pair, create_token, blacklist_jti, is_jti_blacklisted
+from app.core.security import get_password_hash, verify_password, create_token_pair, create_token, is_jti_blacklisted
 from app.core.deps import get_current_user
 from app.services.credit_service import add_credits
 from app.models.user import User
@@ -131,7 +131,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     jti = payload.get("jti")
-    if not jti or is_jti_blacklisted(jti):
+    if not jti or is_jti_blacklisted(db, jti):
         raise HTTPException(status_code=401, detail="Refresh token revoked")
 
     user_id = payload.get("sub")
@@ -145,14 +145,30 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response):
-    from app.core.security import decode_token
-    for cookie_key in (ACCESS_COOKIE_KEY, REFRESH_COOKIE_KEY):
-        token = request.cookies.get(cookie_key)
-        if token:
-            payload = decode_token(token)
-            if payload:
-                blacklist_jti(payload.get("jti"))
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    from datetime import datetime, timezone
+    from app.core.security import decode_token, revoke_jti
+
+    # Cookie 与 Authorization 头里的 token 都吊销（无论客户端用哪种方式鉴权）
+    tokens = [request.cookies.get(k) for k in (ACCESS_COOKIE_KEY, REFRESH_COOKIE_KEY)]
+    auth_header = request.headers.get("authorization") or ""
+    if auth_header.lower().startswith("bearer "):
+        tokens.append(auth_header[7:].strip())
+
+    for token in tokens:
+        if not token:
+            continue
+        payload = decode_token(token)
+        if not payload:
+            continue
+        exp = payload.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp, tz=timezone.utc)
+            if isinstance(exp, (int, float))
+            else None
+        )
+        revoke_jti(db, payload.get("jti"), expires_at=expires_at)
+
     response.delete_cookie(ACCESS_COOKIE_KEY)
     response.delete_cookie(REFRESH_COOKIE_KEY)
     return {"detail": "Logged out"}

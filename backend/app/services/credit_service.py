@@ -4,6 +4,28 @@ from sqlalchemy import text
 from app.models.user import User, CreditLedger
 
 
+def _op_already_applied(db: Session, reason: str, reference_id) -> bool:
+    """幂等检查：同一 (reason, reference_id) 的流水已存在则该笔操作已生效。
+
+    配合 DB 端部分唯一索引 ux_credit_ledger_op 兜底并发竞争。
+    """
+    if not reference_id:
+        return False
+    row = db.execute(
+        text("SELECT 1 FROM credit_ledger WHERE reason = :r AND reference_id = :ref LIMIT 1"),
+        {"r": reason, "ref": str(reference_id)},
+    ).fetchone()
+    return row is not None
+
+
+def _current_balance(db: Session, user_id) -> int:
+    row = db.execute(
+        text("SELECT credits FROM users WHERE id = :uid"),
+        {"uid": str(user_id)},
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def _explicit_budget_cap(db: Session, user_id) -> int | None:
     """用户显式设置过的预算上限（R2-#11）。
 
@@ -72,6 +94,10 @@ def add_credits(
     if delta <= 0:
         raise ValueError("delta must be positive for add_credits")
 
+    # 幂等：同一 (reason, reference_id) 已入账则不重复加（重试/崩溃恢复安全）
+    if _op_already_applied(db, reason, reference_id):
+        return _current_balance(db, user_id)
+
     new_balance = db.execute(
         text("""
             UPDATE users
@@ -91,7 +117,14 @@ def add_credits(
         metadata_json=metadata_json,
     )
     db.add(ledger)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # 并发竞争撞唯一索引：视为该笔已入账（另一事务已提交）
+        db.rollback()
+        if reference_id and _op_already_applied(db, reason, reference_id):
+            return _current_balance(db, user_id)
+        raise
     return new_balance
 
 
@@ -105,6 +138,10 @@ def deduct_credits(
 ) -> int:
     if amount <= 0:
         raise ValueError("amount must be positive")
+
+    # 幂等：同一 (reason, reference_id) 已扣过则不重复扣（重试/崩溃恢复安全）
+    if _op_already_applied(db, reason, reference_id):
+        return _current_balance(db, user_id)
 
     # R2-#11: 显式预算硬拦截（自然月口径，未设置预算的用户不受影响）
     check_budget(db, user_id, amount)
@@ -133,7 +170,14 @@ def deduct_credits(
         metadata_json=metadata_json,
     )
     db.add(ledger)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # 并发竞争撞唯一索引：余额回滚后按已扣处理
+        db.rollback()
+        if reference_id and _op_already_applied(db, reason, reference_id):
+            return _current_balance(db, user_id)
+        raise
     return new_balance
 
 

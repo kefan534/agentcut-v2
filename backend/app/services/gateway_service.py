@@ -357,10 +357,11 @@ async def _fluxart_post_task(
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         response = await client.post(url, headers=headers, json=body)
         if response.status_code >= 400:
-            err_text = response.text[:1000]
-            print(f"[flux-art] POST {url} -> {response.status_code}\n  request_body={json.dumps(body, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+            err_text = response.text[:300]
+            # 脱敏：只记 body 的键名，不落用户提示词/图片 URL 等内容
+            print(f"[flux-art] POST {url} -> {response.status_code}\n  request_keys={sorted(body.keys())}\n  response_body={err_text}", flush=True)
             raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
-        print(f"[flux-art] POST {url} -> {response.status_code} body={json.dumps(body, ensure_ascii=False)}", flush=True)
+        print(f"[flux-art] POST {url} -> {response.status_code} request_keys={sorted(body.keys())}", flush=True)
         return response.json()
 
 
@@ -1034,10 +1035,11 @@ async def _metaso_post_task(
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
         response = await client.post(url, headers=headers, json=body)
         if response.status_code >= 400:
-            err_text = response.text[:1000]
-            print(f"[metaso] POST {url} -> {response.status_code}\n  request_body={json.dumps(body, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+            err_text = response.text[:300]
+            # 脱敏：只记 body 键名，不落用户提示词/图片 URL
+            print(f"[metaso] POST {url} -> {response.status_code}\n  request_keys={sorted(body.keys())}\n  response_body={err_text}", flush=True)
             raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")
-        print(f"[metaso] POST {url} -> {response.status_code} body={json.dumps(body, ensure_ascii=False)}", flush=True)
+        print(f"[metaso] POST {url} -> {response.status_code} request_keys={sorted(body.keys())}", flush=True)
         return response.json()
 
 
@@ -1331,8 +1333,9 @@ async def _create_agnes_task(
             continue
         break
     if response.status_code >= 400:
-        err_text = response.text[:1000]
-        print(f"[agnes] POST {url} -> {response.status_code}\n  request_body={json.dumps(converted, ensure_ascii=False)}\n  response_body={err_text}", flush=True)
+        err_text = response.text[:300]
+        # 脱敏：只记 body 键名，不落用户提示词/图片 URL
+        print(f"[agnes] POST {url} -> {response.status_code}\n  request_keys={sorted(converted.keys())}\n  response_body={err_text}", flush=True)
         if response.status_code == 429:
             raise RuntimeError("Agnes 生成请求过于频繁（上游限制每分钟 1 次），已自动重试仍被限流，请等待约 1 分钟后再生成")
         raise RuntimeError(f"{response.status_code} {response.reason_phrase} | body={err_text}")

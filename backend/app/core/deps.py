@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 
 from app.db.session import get_db
-from app.core.security import decode_token
+from app.core.security import decode_token, is_jti_blacklisted
 from app.models.user import User
 
 security = HTTPBearer(auto_error=False)
@@ -22,6 +22,15 @@ def _extract_token(request: Request, credentials: Optional[HTTPAuthorizationCred
     return None
 
 
+def _validate_access_payload(db: Session, payload: Optional[dict]) -> bool:
+    """校验 access token payload：类型正确 + jti 未被吊销。"""
+    if not payload or payload.get("type") != "access":
+        return False
+    if is_jti_blacklisted(db, payload.get("jti")):
+        return False
+    return True
+
+
 def get_current_user(
     request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
@@ -32,7 +41,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     payload = decode_token(token)
-    if not payload or payload.get("type") != "access":
+    if not _validate_access_payload(db, payload):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     user_id = payload.get("sub")
@@ -70,7 +79,7 @@ def get_current_user_optional(
         payload = decode_token(token)
     except Exception:
         return None
-    if not payload or payload.get("type") != "access":
+    if not _validate_access_payload(db, payload):
         return None
     user_id = payload.get("sub")
     if not user_id:

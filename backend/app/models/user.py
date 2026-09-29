@@ -41,3 +41,16 @@ class CreditLedger(Base):
     __table_args__ = (
         Index("ix_credit_ledger_user_created", "user_id", "created_at"),
     )
+
+
+class RevokedToken(Base):
+    """已吊销 JWT（jti 黑名单）——持久化到 DB，多 worker/重启后仍生效。
+
+    expires_at 到期后 token 本身已失效，行可被 opportunistic 清理。
+    """
+    __tablename__ = "revoked_tokens"
+
+    jti = Column(String(64), primary_key=True)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)

@@ -1,13 +1,9 @@
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Tuple, Set
+from typing import Optional, Tuple
 from jose import JWTError, jwt
 import bcrypt
 from app.core.config import settings
-
-
-# In-memory token blacklist (jti). For multi-worker production deployments, replace with Redis.
-_TOKEN_BLACKLIST: Set[str] = set()
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -54,10 +50,37 @@ def create_token_pair(user_id: str) -> Tuple[str, str]:
     return access, refresh
 
 
-def blacklist_jti(jti: str):
-    if jti:
-        _TOKEN_BLACKLIST.add(jti)
+def revoke_jti(db, jti: str, expires_at: Optional[datetime] = None) -> None:
+    """吊销 token（持久化 DB，多 worker / 重启后仍生效）。
+
+    expires_at 未提供时按 refresh 最长有效期兜底，防止黑名单行永不过期。
+    顺带清理已过期的黑名单行（opportunistic cleanup）。
+    """
+    if not jti:
+        return
+    from app.models.user import RevokedToken
+    from sqlalchemy import text as _text
+
+    if expires_at is None:
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS
+        )
+    try:
+        db.add(RevokedToken(jti=jti, expires_at=expires_at))
+        # 清理已过期条目（token 过期后 JWT 校验自身就会拒绝，黑名单行无用）
+        db.execute(_text("DELETE FROM revoked_tokens WHERE expires_at < NOW()"))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
-def is_jti_blacklisted(jti: str) -> bool:
-    return jti in _TOKEN_BLACKLIST
+def is_jti_blacklisted(db, jti: str) -> bool:
+    if not jti:
+        return False
+    from app.models.user import RevokedToken
+
+    try:
+        return db.query(RevokedToken).filter(RevokedToken.jti == jti).first() is not None
+    except Exception:
+        # 黑名单查询失败时宁可放行（可用性优先），token 签名/过期校验仍在
+        return False

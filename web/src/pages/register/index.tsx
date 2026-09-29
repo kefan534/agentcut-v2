@@ -29,7 +29,7 @@ export default function RegisterPage() {
     };
 
     return (
-        <div className="flex h-full flex-col bg-background">
+        <div className="flex min-h-dvh flex-col bg-background">
             <main className="flex flex-1 items-center justify-center p-6">
                 <Card title="注册" className="w-full max-w-md">
                 <Form layout="vertical" onFinish={handleSubmit}>

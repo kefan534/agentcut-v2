@@ -123,9 +123,10 @@
     }
     html,
     body {
-        height: 100%;
+        /* 覆盖 antd reset 的 height:100%：文档需随页脚生长，window 才能滚到底部 */
+        height: auto;
+        min-height: 100%;
         overflow-x: hidden;
-        overflow-y: auto;
     }
     body {
         @apply bg-background text-foreground;
@@ -471,4 +472,17 @@
 ::view-transition-new(root) {
     animation: none;
     mix-blend-mode: normal;
+}
+
+/* ------------------------------------------------------------------
+   全局滚动修复（必须在 @layer 之外！）
+   antd reset.css 设了 html,body{height:100%}，它是"未分层"规则；
+   未分层规则在级联中永远压过 @layer 内的规则，所以此覆盖写在
+   @layer base 里不生效，会导致页脚永远滚不出来。
+------------------------------------------------------------------ */
+html,
+body {
+    height: auto;
+    min-height: 100%;
+    overflow-x: hidden;
 }
